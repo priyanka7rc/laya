@@ -1,0 +1,18 @@
+create table if not exists Tasks (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references auth.users(id) on delete cascade,
+  title text not null,
+  notes text,
+  due_date date,
+  due_time time,
+  category text check (category in ('home','school','social','self','other')),
+  is_done boolean default false,
+  created_at timestamp default now()
+);
+
+alter table Tasks enable row level security;
+
+create policy "read own"   on Tasks for select using (auth.uid() = user_id);
+create policy "write own"  on Tasks for insert with check (auth.uid() = user_id);
+create policy "update own" on Tasks for update using (auth.uid() = user_id);
+create policy "delete own" on Tasks for delete using (auth.uid() = user_id);
