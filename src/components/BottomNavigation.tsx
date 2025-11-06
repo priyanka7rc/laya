@@ -7,6 +7,7 @@ const navItems = [
   { name: "Home", href: "/", icon: "🏠" },
   { name: "Tasks", href: "/tasks", icon: "✅" },
   { name: "Meals", href: "/meals", icon: "🍽️" },
+  { name: "Plan", href: "/mealplan", icon: "📅" }, 
   { name: "Activity", href: "/activity", icon: "📊" },
 ];
 

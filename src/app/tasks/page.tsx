@@ -56,19 +56,26 @@ export default function TasksPage() {
   };
 
   const toggleTask = async (taskId: string, currentStatus: boolean) => {
+    // Optimistic update - update UI immediately
+    setTasks(tasks.map(task =>
+      task.id === taskId ? { ...task, is_done: !currentStatus } : task
+    ));
+  
     try {
+      // Update Supabase in background
       const { error } = await supabase
         .from('tasks')
         .update({ is_done: !currentStatus })
         .eq('id', taskId);
-
+  
       if (error) throw error;
-
-      setTasks(tasks.map(task =>
-        task.id === taskId ? { ...task, is_done: !currentStatus } : task
-      ));
     } catch (err: any) {
+      // Rollback on error - revert the optimistic update
       console.error('Error updating task:', err);
+      setTasks(tasks.map(task =>
+        task.id === taskId ? { ...task, is_done: currentStatus } : task
+      ));
+      alert('Failed to update task. Please try again.');
     }
   };
 

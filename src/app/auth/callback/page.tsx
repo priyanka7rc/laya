@@ -1,74 +1,32 @@
-// "use client";
+"use client";
 
-// import { useEffect } from 'react';
-// import { useRouter, useSearchParams } from 'next/navigation';
-// import { supabase } from '@/lib/supabaseClient';
-
-// export default function AuthCallback() {
-//   const router = useRouter();
-//   const searchParams = useSearchParams();
-
-//   useEffect(() => {
-//     const handleAuthCallback = async () => {
-//       const code = searchParams.get('code');
-      
-//       if (code) {
-//         // Exchange the code for a session
-//         const { error } = await supabase.auth.exchangeCodeForSession(code);
-        
-//         if (error) {
-//           console.error('Error exchanging code for session:', error);
-//           router.push('/signin');
-//         } else {
-//           router.push('/');
-//           router.refresh();
-//         }
-//       } else {
-//         // No code, redirect to home
-//         router.push('/');
-//       }
-//     };
-
-//     handleAuthCallback();
-//   }, [router, searchParams]);
-
-//   return (
-//     <div className="min-h-screen flex items-center justify-center bg-black">
-//       <p className="text-white">Completing sign in...</p>
-//     </div>
-//   );
-// }
-
-import { Suspense } from "react";
-
-export const dynamic = "force-dynamic"; // avoids prerender errors
-export const revalidate = 0;
+import { useEffect } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { supabase } from '@/lib/supabaseClient';
+import { Suspense } from 'react';
 
 function AuthCallbackInner() {
-  "use client";
-
-  import { useEffect } from "react";
-  import { useRouter, useSearchParams } from "next/navigation";
-  import { supabase } from "@/lib/supabaseClient";
-
   const router = useRouter();
   const searchParams = useSearchParams();
 
   useEffect(() => {
     const handleAuthCallback = async () => {
-      const code = searchParams.get("code");
-
+      const code = searchParams.get('code');
+      
       if (code) {
+        // Exchange the code for a session
         const { error } = await supabase.auth.exchangeCodeForSession(code);
+        
         if (error) {
-          console.error("Error exchanging code for session:", error);
-          router.push("/signin");
+          console.error('Error exchanging code for session:', error);
+          router.push('/signin');
         } else {
-          router.push("/");
+          router.push('/');
           router.refresh();
         }
       } else {
-        router.push("/");
+        // No code, redirect to home
+        router.push('/');
       }
     };
 
@@ -82,9 +40,13 @@ function AuthCallbackInner() {
   );
 }
 
-export default function AuthCallbackPage() {
+export default function AuthCallback() {
   return (
-    <Suspense fallback={<div className="p-6">Preparing sign-in…</div>}>
+    <Suspense fallback={
+      <div className="min-h-screen flex items-center justify-center bg-black">
+        <p className="text-white">Preparing sign-in...</p>
+      </div>
+    }>
       <AuthCallbackInner />
     </Suspense>
   );
