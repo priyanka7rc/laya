@@ -24,6 +24,11 @@ interface CategoryCount {
   count: number;
 }
 
+interface MealPlanData {
+  slot: string;
+  recipes: { title: string } | null;
+}
+
 export default function Home() {
   const { user } = useAuth();
   const [meals, setMeals] = useState<TodayMeal[]>([]);
@@ -47,13 +52,15 @@ export default function Home() {
         .from('mealplanslots')
         .select(`slot, recipes (title)`)
         .eq('user_id', user?.id)
-        .eq('day', today);
+        .eq('day', today) as { data: MealPlanData[] | null };
+        // .eq('day', today);
 
       const formattedMeals = ['breakfast', 'lunch', 'dinner'].map(slot => {
         const meal = mealsData?.find(m => m.slot === slot);
         return {
           slot: slot as 'breakfast' | 'lunch' | 'dinner',
           recipe_title: meal?.recipes?.title || null,
+          // recipe_title: (meal?.recipes as any)?.title || null,
         };
       });
 
