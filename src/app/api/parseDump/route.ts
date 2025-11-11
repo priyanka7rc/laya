@@ -21,8 +21,83 @@ const ParsedDumpSchema = z.object({
 type Task = z.infer<typeof TaskSchema>;
 type ParsedDump = z.infer<typeof ParsedDumpSchema>;
 
+// Rate limiting: 5 requests per minute per user
+const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute in ms
+const RATE_LIMIT_MAX_REQUESTS = 5;
+
+// In-memory store: Map<userId, timestamp[]>
+const requestStore = new Map<string, number[]>();
+
+// Clean up old entries periodically (every 5 minutes)
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, timestamps] of requestStore.entries()) {
+    const recentTimestamps = timestamps.filter(ts => now - ts < RATE_LIMIT_WINDOW);
+    if (recentTimestamps.length === 0) {
+      requestStore.delete(key);
+    } else {
+      requestStore.set(key, recentTimestamps);
+    }
+  }
+}, 5 * 60 * 1000);
+
+function getRateLimitKey(request: NextRequest): string {
+  // Try to get user ID from auth header or session
+  const authHeader = request.headers.get('authorization');
+  if (authHeader) {
+    // Extract user ID from JWT or session if available
+    // For now, use the auth header as a simple identifier
+    return `user:${authHeader}`;
+  }
+  
+  // Fallback to IP address
+  const ip = request.headers.get('x-forwarded-for') || 
+              request.headers.get('x-real-ip') || 
+              'unknown';
+  return `ip:${ip}`;
+}
+
+async function checkRateLimit(key: string): Promise<boolean> {
+  const now = Date.now();
+  const timestamps = requestStore.get(key) || [];
+  
+  // Filter to only recent requests (sliding window)
+  const recentTimestamps = timestamps.filter(ts => now - ts < RATE_LIMIT_WINDOW);
+  
+  // Check if limit exceeded
+  if (recentTimestamps.length >= RATE_LIMIT_MAX_REQUESTS) {
+    return false;
+  }
+  
+  // Add current request timestamp
+  recentTimestamps.push(now);
+  requestStore.set(key, recentTimestamps);
+  
+  return true;
+}
+
+async function addJitter() {
+  // Random delay between 100-300ms to discourage hammering
+  const delay = 100 + Math.random() * 200;
+  await new Promise(resolve => setTimeout(resolve, delay));
+}
+
 export async function POST(request: NextRequest) {
   try {
+    // Check rate limit
+    const rateLimitKey = getRateLimitKey(request);
+    const isAllowed = await checkRateLimit(rateLimitKey);
+    
+    if (!isAllowed) {
+      return NextResponse.json(
+        { error: "Too many requests. Try again in a minute." },
+        { status: 429 }
+      );
+    }
+    
+    // Add jittered delay to discourage hammering
+    await addJitter();
+    
     const { text } = await request.json();
 
     if (!text || typeof text !== 'string') {
@@ -32,8 +107,32 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // TODO: Replace this with actual OpenAI call when ready
+    // Use mock parsing for now (replace with OpenAI when ready)
     const parsedDump = await mockParseText(text);
+    
+    /* To enable real OpenAI parsing:
+    
+    // Hard-guard secrets at runtime
+    if (!process.env.OPENAI_API_KEY) {
+      return NextResponse.json(
+        { 
+          error: "AI service not configured. Add OPENAI_API_KEY to your environment variables.",
+          hint: "The API requires OpenAI to parse brain dumps"
+        },
+        { status: 503 }
+      );
+    }
+    
+    // Lazy import OpenAI (won't break build if package not installed)
+    const { OpenAI } = await import('openai');
+    const openai = new OpenAI({ 
+      apiKey: process.env.OPENAI_API_KEY 
+    });
+    
+    // Call OpenAI with your schema...
+    const parsedDump = await callOpenAI(openai, text);
+    
+    */
 
     // Validate response with Zod
     const validatedResult = ParsedDumpSchema.parse(parsedDump);

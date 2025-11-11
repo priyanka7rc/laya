@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabaseClient';
 import { useAuth } from './AuthProvider';
 import { useRouter } from 'next/navigation';
 import Toast from './Toast';
+import { trackDumpParse } from '@/lib/analytics';
 
 export default function FloatingBrainDump() {
   const { user } = useAuth();
@@ -59,7 +60,7 @@ export default function FloatingBrainDump() {
           console.error('Speech recognition error:', event.error);
           setIsListening(false);
           if (event.error !== 'aborted' && event.error !== 'no-speech') {
-            setToast('Voice input error. Please try again.');
+            setToast("Couldn't hear that. Try again?");
           }
         };
 
@@ -114,7 +115,14 @@ export default function FloatingBrainDump() {
         body: JSON.stringify({ text: content }),
       });
   
-      if (!response.ok) throw new Error('Failed to parse');
+      if (!response.ok) {
+        if (response.status === 429) {
+          const data = await response.json();
+          setToast(data.error || "Too many requests. Try again in a minute.");
+          return;
+        }
+        throw new Error('Failed to parse');
+      }
   
       const { tasks, summary } = await response.json();
   
@@ -129,6 +137,9 @@ export default function FloatingBrainDump() {
         );
   
       if (error) throw error;
+
+      // Track brain dump parse with task count
+      trackDumpParse(tasks.length);
   
       setContent('');
       setTranscript('');
@@ -148,7 +159,7 @@ export default function FloatingBrainDump() {
       }, 100);
     } catch (error: any) {
       console.error('Error saving brain dump:', error);
-      setToast('Failed to save. Please try again.');
+      setToast("Couldn't save. Check your connection?");
     } finally {
       setLoading(false);
     }
@@ -171,7 +182,7 @@ export default function FloatingBrainDump() {
       <button
         onClick={() => setIsOpen(true)}
         className="fixed bottom-24 right-4 md:bottom-6 md:right-6 z-40 w-14 h-14 bg-gradient-to-br from-purple-500 to-blue-600 text-white rounded-full shadow-lg hover:shadow-xl hover:scale-110 transition-all duration-200 flex items-center justify-center"
-        aria-label="Brain Dump"
+        aria-label="Open Brain Dump"
       >
         <svg
           xmlns="http://www.w3.org/2000/svg"
@@ -238,15 +249,15 @@ export default function FloatingBrainDump() {
               </button>
             </div>
 
-            <textarea
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Type or speak your thoughts..."
-              autoFocus
-              rows={6}
-              className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 resize-none"
-            />
+                <textarea
+                  value={content}
+                  onChange={(e) => setContent(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="What's on your mind?"
+                  autoFocus
+                  rows={6}
+                  className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 resize-none"
+                />
 
             <div className="flex items-center justify-between mt-4">
               <div className="flex items-center gap-2">

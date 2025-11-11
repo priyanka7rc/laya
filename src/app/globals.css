@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+@variant dark (&:where(.dark, .dark *));
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
@@ -24,10 +26,12 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
 /* Hide Next.js dev indicator */
 #__next-build-watcher {
   display: none !important;
 }
+
 @keyframes slide-up {
   from {
     transform: translateY(100%);
@@ -60,15 +64,72 @@ body {
 
 @keyframes slide-down {
   from {
-    transform: translate(-50%, -100%);
+    transform: translateY(-10px);
     opacity: 0;
   }
   to {
-    transform: translate(-50%, 0);
+    transform: translateY(0);
     opacity: 1;
   }
 }
 
 .animate-slide-down {
-  animation: slide-down 0.3s ease-out;
+  animation: slide-down 0.2s ease-out;
+}
+
+@keyframes slide-in-right {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.animate-slide-in-right {
+  animation: slide-in-right 0.3s ease-out;
+}
+
+/* Improved focus states for accessibility */
+.focus-ring {
+  @apply focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-black;
+}
+
+/* iOS-friendly input sizes (16px prevents auto-zoom) */
+.input-mobile {
+  font-size: 16px;
+}
+
+/* Minimum tap target size (44px iOS guideline) */
+.tap-target {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+/* Checkbox tap target improvements */
+input[type="checkbox"] {
+  min-width: 24px;
+  min-height: 24px;
+  cursor: pointer;
+}
+
+/* Better button spacing for thumb reach */
+button {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+/* iOS safe area support */
+@supports (padding: max(0px)) {
+  body {
+    padding-left: max(0px, env(safe-area-inset-left));
+    padding-right: max(0px, env(safe-area-inset-right));
+  }
+  
+  /* Safe area for bottom navigation */
+  .safe-area-bottom {
+    padding-bottom: max(0px, env(safe-area-inset-bottom));
+  }
 }

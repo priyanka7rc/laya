@@ -36,14 +36,14 @@ export default function SignInPage() {
   };
 
   return (
-    <div className="min-h-screen bg-black flex items-center justify-center px-4">
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-950 flex items-center justify-center px-4 transition-colors">
       <div className="w-full max-w-md">
-        <h1 className="text-3xl font-bold text-white mb-8 text-center">
+        <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-8 text-center">
           Sign In
         </h1>
         <form onSubmit={handleSignIn} className="space-y-4">
           <div>
-            <label htmlFor="email" className="block text-sm font-medium text-gray-300 mb-2">
+            <label htmlFor="email" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
               Email
             </label>
             <input
@@ -53,7 +53,7 @@ export default function SignInPage() {
               onChange={(e) => setEmail(e.target.value)}
               placeholder="your@email.com"
               required
-              className="w-full px-4 py-3 rounded-lg bg-gray-900 text-white border border-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-4 py-3 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-white border border-gray-300 dark:border-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors"
             />
           </div>
           <button
@@ -64,7 +64,7 @@ export default function SignInPage() {
             {loading ? 'Sending...' : 'Send Magic Link'}
           </button>
           {message && (
-            <p className={`text-sm text-center ${message.includes('Check your email') ? 'text-green-400' : 'text-red-400'}`}>
+            <p className={`text-sm text-center ${message.includes('Check your email') ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
               {message}
             </p>
           )}

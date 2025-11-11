@@ -139,24 +139,24 @@ export default function MealPlanPage() {
 
   return (
     <ProtectedRoute>
-      <div className="min-h-screen bg-black pb-20 md:pb-4">
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-950 pb-20 md:pb-4 transition-colors">
         <main className="container mx-auto px-4 py-8 max-w-7xl">
-          <h1 className="text-3xl font-bold text-white mb-6">Weekly Meal Plan</h1>
+          <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-6">Weekly Meal Plan</h1>
 
           {loading ? (
-            <p className="text-gray-400">Loading meal plan...</p>
+            <p className="text-gray-600 dark:text-gray-400">Loading meal plan...</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full border-collapse">
                 <thead>
                   <tr>
-                    <th className="p-3 text-left text-sm font-medium text-gray-400 border border-gray-800 bg-gray-900 sticky left-0 z-10">
+                    <th className="p-3 text-left text-sm font-medium text-gray-700 dark:text-gray-400 border border-gray-300 dark:border-gray-800 bg-gray-100 dark:bg-gray-900 sticky left-0 z-10">
                       Day
                     </th>
                     {slots.map((slot) => (
                       <th
                         key={slot}
-                        className="p-3 text-center text-sm font-medium text-gray-400 border border-gray-800 bg-gray-900 capitalize min-w-[150px]"
+                        className="p-3 text-center text-sm font-medium text-gray-700 dark:text-gray-400 border border-gray-300 dark:border-gray-800 bg-gray-100 dark:bg-gray-900 capitalize min-w-[150px]"
                       >
                         {slot}
                       </th>
@@ -166,24 +166,24 @@ export default function MealPlanPage() {
                 <tbody>
                   {weekDays.map((day) => (
                     <tr key={day.date}>
-                      <td className="p-3 text-sm font-medium text-gray-300 border border-gray-800 bg-gray-900/50 sticky left-0 z-10">
+                      <td className="p-3 text-sm font-medium text-gray-800 dark:text-gray-300 border border-gray-300 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50 sticky left-0 z-10">
                         <div>{day.label}</div>
-                        <div className="text-xs text-gray-600">{day.fullLabel.split(',')[1]}</div>
+                        <div className="text-xs text-gray-500 dark:text-gray-600">{day.fullLabel.split(',')[1]}</div>
                       </td>
                       {slots.map((slot) => {
                         const meal = getMealForSlot(day.date, slot);
                         return (
                           <td
                             key={`${day.date}-${slot}`}
-                            className="p-2 border border-gray-800 cursor-pointer hover:bg-gray-800 transition-colors"
+                            className="p-2 border border-gray-300 dark:border-gray-800 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
                             onClick={() => handleCellClick(day.date, slot)}
                           >
                             {meal?.recipe_title ? (
-                              <div className="text-sm text-white bg-blue-600/20 border border-blue-600/50 rounded px-2 py-2 hover:bg-blue-600/30">
+                              <div className="text-sm text-gray-900 dark:text-white bg-blue-100 dark:bg-blue-600/20 border border-blue-400 dark:border-blue-600/50 rounded px-2 py-2 hover:bg-blue-200 dark:hover:bg-blue-600/30 transition-colors">
                                 {meal.recipe_title}
                               </div>
                             ) : (
-                              <div className="text-sm text-gray-600 text-center py-2">
+                              <div className="text-sm text-gray-500 dark:text-gray-600 text-center py-2">
                                 + Add
                               </div>
                             )}

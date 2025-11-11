@@ -4,6 +4,7 @@ import { createContext, useContext, useEffect, useState } from 'react';
 import { User, Session } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabaseClient';
 import { useRouter } from 'next/navigation';
+import { trackSessionStart } from '@/lib/analytics';
 
 interface AuthContextType {
   user: User | null;
@@ -33,6 +34,11 @@ export default function AuthProvider({ children }: { children: React.ReactNode }
       setSession(session);
       setUser(session?.user ?? null);
       setLoading(false);
+      
+      // Track session start when user is authenticated
+      if (session?.user) {
+        trackSessionStart();
+      }
     });
 
     // Listen for auth changes

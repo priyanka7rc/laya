@@ -56,14 +56,15 @@ export default function RecipePicker({ onSelect, onClose }: RecipePickerProps) {
       />
 
       {/* Modal */}
-      <div className="relative w-full max-w-2xl bg-gray-900 rounded-lg shadow-2xl max-h-[80vh] flex flex-col">
+      <div className="relative w-full max-w-2xl bg-white dark:bg-gray-900 rounded-lg shadow-2xl max-h-[80vh] flex flex-col">
         {/* Header */}
-        <div className="p-6 border-b border-gray-800">
+        <div className="p-6 border-b border-gray-200 dark:border-gray-800">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-2xl font-bold text-white">Choose a Recipe</h2>
+            <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Choose a Recipe</h2>
             <button
               onClick={onClose}
-              className="text-gray-400 hover:text-white transition-colors"
+              className="text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors"
+              aria-label="Close recipe picker"
             >
               <svg
                 xmlns="http://www.w3.org/2000/svg"
@@ -84,16 +85,16 @@ export default function RecipePicker({ onSelect, onClose }: RecipePickerProps) {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search recipes..."
-            className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="w-full px-4 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
         </div>
 
         {/* Recipe List */}
         <div className="flex-1 overflow-y-auto p-6">
           {loading ? (
-            <p className="text-gray-400 text-center">Loading recipes...</p>
+            <p className="text-gray-600 dark:text-gray-400 text-center">Loading recipes...</p>
           ) : filteredRecipes.length === 0 ? (
-            <p className="text-gray-400 text-center">
+            <p className="text-gray-600 dark:text-gray-400 text-center">
               {search ? 'No recipes found' : 'No recipes yet. Add some in the Meals page!'}
             </p>
           ) : (
@@ -102,17 +103,17 @@ export default function RecipePicker({ onSelect, onClose }: RecipePickerProps) {
                 <button
                   key={recipe.id}
                   onClick={() => onSelect(recipe.id)}
-                  className="w-full text-left p-4 bg-gray-800 hover:bg-gray-750 border border-gray-700 hover:border-blue-600 rounded-lg transition-colors"
+                  className="w-full text-left p-4 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-750 border border-gray-300 dark:border-gray-700 hover:border-blue-500 dark:hover:border-blue-600 rounded-lg transition-colors"
                 >
-                  <h3 className="font-semibold text-white mb-1">{recipe.title}</h3>
-                  <div className="flex items-center gap-3 text-sm text-gray-400">
+                  <h3 className="font-semibold text-gray-900 dark:text-white mb-1">{recipe.title}</h3>
+                  <div className="flex items-center gap-3 text-sm text-gray-600 dark:text-gray-400">
                     {recipe.duration_min && (
                       <span>⏱️ {recipe.duration_min} min</span>
                     )}
                     {recipe.tags && recipe.tags.length > 0 && (
                       <div className="flex gap-1">
                         {recipe.tags.slice(0, 3).map((tag, idx) => (
-                          <span key={idx} className="px-2 py-0.5 bg-gray-700 rounded text-xs">
+                          <span key={idx} className="px-2 py-0.5 bg-gray-200 dark:bg-gray-700 rounded text-xs">
                             {tag}
                           </span>
                         ))}
@@ -126,10 +127,10 @@ export default function RecipePicker({ onSelect, onClose }: RecipePickerProps) {
         </div>
 
         {/* Footer */}
-        <div className="p-6 border-t border-gray-800">
+        <div className="p-6 border-t border-gray-200 dark:border-gray-800">
           <button
             onClick={() => onSelect(null)}
-            className="w-full py-2 px-4 bg-red-600/20 text-red-400 border border-red-600/50 rounded-lg hover:bg-red-600/30 transition-colors"
+            className="w-full py-2 px-4 bg-red-100 dark:bg-red-600/20 text-red-700 dark:text-red-400 border border-red-300 dark:border-red-600/50 rounded-lg hover:bg-red-200 dark:hover:bg-red-600/30 transition-colors"
           >
             Remove Meal
           </button>

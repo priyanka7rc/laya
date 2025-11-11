@@ -144,6 +144,7 @@ export default function GroceriesPage() {
                     checked={item.is_checked}
                     onChange={() => toggleItem(item.id, item.is_checked)}
                     className="h-5 w-5 rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-2 focus:ring-blue-500 cursor-pointer"
+                    aria-label={`Mark ${item.name} as ${item.is_checked ? 'needed' : 'purchased'}`}
                   />
                   <div className="flex-1">
                     <div className="flex items-baseline gap-2">
