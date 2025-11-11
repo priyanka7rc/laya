@@ -57,7 +57,7 @@ export default function ActivityPage() {
         .lte('created_at', sundayStr + 'T23:59:59');
 
       // Fetch meals planned this week
-      const { data: mealsData } = await supabase
+      const { count: mealsCount } = await supabase
         .from('mealplanslots')
         .select('id', { count: 'exact', head: true })
         .eq('user_id', user?.id)
@@ -65,7 +65,7 @@ export default function ActivityPage() {
         .lte('day', sundayStr);
 
       // Fetch groceries checked this week
-      const { data: groceriesData } = await supabase
+      const { count: groceriesCount } = await supabase
         .from('grocerylistitems')
         .select('id', { count: 'exact', head: true })
         .eq('user_id', user?.id)
@@ -99,8 +99,8 @@ export default function ActivityPage() {
 
       setStats({
         tasksCompleted: tasksData?.length || 0,
-        mealsPlanned: mealsData?.[0]?.count || 0,
-        groceriesChecked: groceriesData?.[0]?.count || 0,
+        mealsPlanned: mealsCount || 0,
+        groceriesChecked: groceriesCount || 0,
         dailyTasks,
         topDay,
       });
