@@ -62,7 +62,7 @@ export function validateTaskQuickAdd(data: unknown) {
     const fieldErrors: Record<string, string> = {};
     const errorMessages: string[] = [];
     
-    result.error.errors.forEach((error) => {
+    result.error.issues.forEach((error) => {
       const field = error.path[0] as string;
       const message = error.message;
       
