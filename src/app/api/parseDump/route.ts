@@ -82,6 +82,24 @@ async function addJitter() {
   await new Promise(resolve => setTimeout(resolve, delay));
 }
 
+async function getUserId(request: NextRequest): Promise<string | null> {
+  // Try to get user ID from authorization header (mobile app sends session token)
+  const authHeader = request.headers.get('authorization');
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.replace('Bearer ', '');
+    // Decode token to get user ID (simplified - in production use proper JWT verification)
+    try {
+      const payload = JSON.parse(atob(token.split('.')[1]));
+      return payload.sub || null;
+    } catch (e) {
+      console.error('Failed to decode auth token:', e);
+    }
+  }
+  
+  // Fallback: Return a test user ID for POC (remove in production)
+  return 'test-user-' + request.headers.get('x-forwarded-for');
+}
+
 export async function POST(request: NextRequest) {
   try {
     // Check rate limit
@@ -107,32 +125,73 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Use mock parsing for now (replace with OpenAI when ready)
-    const parsedDump = await mockParseText(text);
-    
-    /* To enable real OpenAI parsing:
-    
-    // Hard-guard secrets at runtime
+    // Check if OpenAI is configured
     if (!process.env.OPENAI_API_KEY) {
+      console.warn('OpenAI not configured, using mock parsing');
+      const parsedDump = await mockParseText(text);
+      const validatedResult = ParsedDumpSchema.parse(parsedDump);
+      return NextResponse.json(validatedResult);
+    }
+
+    // Get user ID from auth header or session
+    const userId = await getUserId(request);
+    if (!userId) {
       return NextResponse.json(
-        { 
-          error: "AI service not configured. Add OPENAI_API_KEY to your environment variables.",
-          hint: "The API requires OpenAI to parse brain dumps"
-        },
-        { status: 503 }
+        { error: 'Authentication required' },
+        { status: 401 }
       );
     }
+
+    // Check token quota
+    const { checkTokenQuota, parseTaskWithAI, logUsage, calculateCost } = await import('@/lib/openai');
+    const hasQuota = await checkTokenQuota(userId);
     
-    // Lazy import OpenAI (won't break build if package not installed)
-    const { OpenAI } = await import('openai');
-    const openai = new OpenAI({ 
-      apiKey: process.env.OPENAI_API_KEY 
-    });
-    
-    // Call OpenAI with your schema...
-    const parsedDump = await callOpenAI(openai, text);
-    
-    */
+    if (!hasQuota) {
+      return NextResponse.json(
+        { 
+          error: 'Token quota exceeded',
+          message: 'You have reached your monthly token limit. Please contact support to increase your quota.'
+        },
+        { status: 403 }
+      );
+    }
+
+    // Parse with OpenAI
+    try {
+      const result: any = await parseTaskWithAI(text);
+      
+      // Log usage
+      await logUsage(userId, {
+        model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+        prompt_tokens: result.promptTokens,
+        completion_tokens: result.completionTokens,
+        total_tokens: result.totalTokens,
+        estimated_cost_usd: result.cost,
+        input_text: text,
+        endpoint: '/api/parseDump',
+      });
+
+      // Format response
+      const parsedDump = {
+        tasks: [{
+          title: result.title,
+          notes: null,
+          due_date: result.due_date,
+          due_time: result.due_time,
+          category: result.category,
+        }],
+        summary: 'Task parsed with AI',
+      };
+
+      const validatedResult = ParsedDumpSchema.parse(parsedDump);
+      return NextResponse.json(validatedResult);
+    } catch (aiError) {
+      console.error('OpenAI parsing failed, falling back to mock:', aiError);
+      // Fallback to mock parsing
+      const parsedDump = await mockParseText(text);
+      const validatedResult = ParsedDumpSchema.parse(parsedDump);
+      return NextResponse.json(validatedResult);
+    }
 
     // Validate response with Zod
     const validatedResult = ParsedDumpSchema.parse(parsedDump);
@@ -168,18 +227,18 @@ async function mockParseText(text: string): Promise<ParsedDump> {
     .map(t => t.trim())
     .filter(t => t.length > 0);
 
-    if (taskStrings.length === 0) {
-      return {
-        tasks: [{
-          title: text.trim().slice(0, 100),
-          notes: null,
+  if (taskStrings.length === 0) {
+    return {
+      tasks: [{
+        title: text.trim().slice(0, 100),
+        notes: null,
           due_date: getTodayDate(),  // Changed from null
           due_time: '20:00:00',      // Changed from null
-          category: 'Brain Dump',
-        }],
-        summary: 'Extracted 1 task',
-      };
-    }
+        category: 'Brain Dump',
+      }],
+      summary: 'Extracted 1 task',
+    };
+  }
 
   // Parse each task string individually
   const parsedTasks = taskStrings.map(taskStr => {
@@ -245,8 +304,8 @@ function extractTimeFromText(text: string): string | null {
     if (meridiem === 'pm' && hours < 12) hours += 12;
     if (meridiem === 'am' && hours === 12) hours = 0;
 
-    return `${hours.toString().padStart(2, '0')}:${minutes}:00`;
-  }
+      return `${hours.toString().padStart(2, '0')}:${minutes}:00`;
+    }
 
   // Pattern 3: "15:00", "3:30" (24-hour or ambiguous)
   const pattern3 = /\b(\d{1,2}):(\d{2})\b/i;

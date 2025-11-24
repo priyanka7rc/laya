@@ -59,15 +59,15 @@ export default function RootLayout({
       >
         <ThemeProvider>
           <PostHogProvider>
-            <AuthProvider>
+        <AuthProvider>
               <ToastProvider>
                 <ThemeToggle />
-                {children}
-                <ConditionalNav />
-                <FloatingBrainDump />
+            {children}
+            <ConditionalNav />
+            <FloatingBrainDump />
                 <ToastViewport />
-              </ToastProvider>
-            </AuthProvider>
+          </ToastProvider>
+        </AuthProvider>
           </PostHogProvider>
         </ThemeProvider>
       </body>

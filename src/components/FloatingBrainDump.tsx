@@ -137,22 +137,22 @@ export default function FloatingBrainDump() {
         );
   
       if (error) throw error;
-
+  
       // Track brain dump parse with task count
       trackDumpParse(tasks.length);
   
       setContent('');
       setTranscript('');
       setIsOpen(false);
-
+      
       // Check if we're on tasks page and force reload
       const currentPath = window.location.pathname;
       if (currentPath === '/tasks') {
         window.location.reload();
       } else {
-        router.refresh();
+      router.refresh();
       }
-
+      
       // Show toast notification
       setTimeout(() => {
         setToast(summary || `Created ${tasks.length} task(s)!`);
@@ -249,15 +249,15 @@ export default function FloatingBrainDump() {
               </button>
             </div>
 
-                <textarea
-                  value={content}
-                  onChange={(e) => setContent(e.target.value)}
-                  onKeyDown={handleKeyDown}
+            <textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              onKeyDown={handleKeyDown}
                   placeholder="What's on your mind?"
-                  autoFocus
-                  rows={6}
-                  className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 resize-none"
-                />
+              autoFocus
+              rows={6}
+              className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 resize-none"
+            />
 
             <div className="flex items-center justify-between mt-4">
               <div className="flex items-center gap-2">
@@ -298,9 +298,9 @@ export default function FloatingBrainDump() {
                   )}
                 </button>
                 
-                <span className="text-xs text-gray-500">
+              <span className="text-xs text-gray-500">
                   {isListening ? 'Recording...' : 'Cmd/Ctrl + Enter to save'}
-                </span>
+              </span>
               </div>
               
               <div className="flex gap-2">

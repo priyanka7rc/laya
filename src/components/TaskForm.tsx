@@ -20,7 +20,7 @@ export default function TaskForm({ onSuccess, onError, editTask }: TaskFormProps
   const [dueTime, setDueTime] = useState(editTask?.due_time || '');
   const [loading, setLoading] = useState(false);
   const [generatingCategory, setGeneratingCategory] = useState(false);
-  
+
   // ← Add validation errors state
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
 
@@ -155,8 +155,8 @@ export default function TaskForm({ onSuccess, onError, editTask }: TaskFormProps
       {/* Category Field */}
       <div>
         <label className="block text-sm font-medium text-gray-300 mb-2">
-          Category
-        </label>
+            Category
+          </label>
         <input
           type="text"
           value={category}
@@ -223,13 +223,13 @@ export default function TaskForm({ onSuccess, onError, editTask }: TaskFormProps
 
       {/* Submit Button */}
       <div className="flex gap-2 pt-2">
-        <button
-          type="submit"
+      <button
+        type="submit"
           disabled={loading || !title.trim()}
           className="flex-1 h-11 min-w-[120px] px-6 bg-blue-600 text-white text-base font-medium rounded-2xl hover:bg-blue-700 active:bg-blue-800 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-black transition-colors"
-        >
-          {loading ? 'Saving...' : editTask ? 'Update Task' : 'Add Task'}
-        </button>
+      >
+        {loading ? 'Saving...' : editTask ? 'Update Task' : 'Add Task'}
+      </button>
       </div>
     </form>
   );
