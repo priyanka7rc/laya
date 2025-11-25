@@ -183,3 +183,123 @@ export async function logUsage(
   });
 }
 
+// ============================================
+// WHISPER TRANSCRIPTION FOR WHATSAPP
+// ============================================
+
+/**
+ * Download audio file from WhatsApp and transcribe with Whisper
+ * 
+ * WhatsApp audio flow:
+ * 1. Get media URL from WhatsApp API
+ * 2. Download audio file
+ * 3. Send to Whisper API
+ * 4. Return transcription
+ */
+export async function transcribeAudioFromWhatsApp(
+  audioId: string
+): Promise<{ text: string; audioUrl: string }> {
+  try {
+    // 1. Get media URL from WhatsApp
+    const mediaUrl = await getWhatsAppMediaUrl(audioId);
+    
+    // 2. Download audio file
+    const audioBuffer = await downloadWhatsAppMedia(mediaUrl);
+    
+    // 3. Transcribe with Whisper
+    const transcription = await transcribeWithWhisper(audioBuffer);
+    
+    return {
+      text: transcription,
+      audioUrl: mediaUrl,
+    };
+  } catch (error) {
+    console.error('❌ Error transcribing WhatsApp audio:', error);
+    throw error;
+  }
+}
+
+/**
+ * Get media URL from WhatsApp Cloud API
+ */
+async function getWhatsAppMediaUrl(mediaId: string): Promise<string> {
+  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+  
+  if (!accessToken) {
+    throw new Error('WHATSAPP_ACCESS_TOKEN not configured');
+  }
+
+  try {
+    // Get media URL from WhatsApp API
+    const response = await fetch(`https://graph.facebook.com/v18.0/${mediaId}`, {
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to get media URL: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    return data.url;
+  } catch (error) {
+    console.error('Error getting WhatsApp media URL:', error);
+    throw error;
+  }
+}
+
+/**
+ * Download media file from WhatsApp
+ */
+async function downloadWhatsAppMedia(mediaUrl: string): Promise<Buffer> {
+  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+  
+  if (!accessToken) {
+    throw new Error('WHATSAPP_ACCESS_TOKEN not configured');
+  }
+
+  try {
+    const response = await fetch(mediaUrl, {
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to download media: ${response.statusText}`);
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    return Buffer.from(arrayBuffer);
+  } catch (error) {
+    console.error('Error downloading WhatsApp media:', error);
+    throw error;
+  }
+}
+
+/**
+ * Transcribe audio buffer with OpenAI Whisper
+ */
+async function transcribeWithWhisper(audioBuffer: Buffer): Promise<string> {
+  try {
+    // Create a File-like object from the buffer
+    const audioFile = new File([audioBuffer], 'audio.ogg', {
+      type: 'audio/ogg',
+    });
+
+    const transcription = await openai.audio.transcriptions.create({
+      file: audioFile,
+      model: 'whisper-1',
+      language: 'en', // Can be detected automatically or set to 'hi' for Hindi
+      response_format: 'text',
+    });
+
+    console.log('🎤 Whisper transcription:', transcription);
+    return transcription as string;
+  } catch (error) {
+    console.error('Error with Whisper transcription:', error);
+    throw error;
+  }
+}
+
