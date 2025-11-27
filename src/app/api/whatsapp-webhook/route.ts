@@ -71,75 +71,130 @@ export async function POST(request: NextRequest) {
     // Log incoming webhook (helpful for debugging)
     console.log('📥 WhatsApp Webhook:', JSON.stringify(body, null, 2));
 
-    // WhatsApp sends multiple types of webhooks, we only care about messages
-    if (!body.entry || !Array.isArray(body.entry)) {
+    // Detect provider format: Gupshup vs Meta
+    const isGupshup = body.type === 'message' && body.payload;
+    const isMeta = body.entry && Array.isArray(body.entry);
+
+    if (!isGupshup && !isMeta) {
+      console.log('⚠️ Unknown webhook format, ignoring');
       return NextResponse.json({ status: 'ignored' }, { status: 200 });
     }
 
-    // Process each entry (usually just one)
-    for (const entry of body.entry) {
-      const changes = entry.changes || [];
+    // ============================================
+    // GUPSHUP FORMAT
+    // ============================================
+    if (isGupshup) {
+      const payload = body.payload;
       
-      for (const change of changes) {
-        // Only process message webhooks
-        if (change.field !== 'messages') {
-          continue;
-        }
+      // Extract message data
+      const phoneNumber = payload.source || payload.sender?.phone;
+      const messageId = payload.id || `gupshup-${Date.now()}`;
+      const timestamp = payload.timestamp || new Date().toISOString();
+      const messageType = payload.type;
 
-        const value = change.value;
+      if (!phoneNumber) {
+        console.error('❌ No phone number in Gupshup payload');
+        return NextResponse.json({ status: 'ok' }, { status: 200 });
+      }
+
+      let content: string | null = null;
+      let audioId: string | null = null;
+      let replyToMessage: string | null = null;
+
+      // Extract reply context if present
+      if (payload.context && payload.context.message) {
+        replyToMessage = payload.context.message;
+        console.log(`↩️ Reply detected: "${replyToMessage}"`);
+      }
+
+      // Extract content based on message type
+      if (messageType === 'text' && payload.payload?.text) {
+        content = payload.payload.text;
+      } else if (messageType === 'audio' && payload.payload?.url) {
+        audioId = payload.payload.url; // Gupshup provides direct URL
+      } else {
+        console.log(`⚠️ Unsupported Gupshup message type: ${messageType}`);
+        return NextResponse.json({ status: 'ok' }, { status: 200 });
+      }
+
+      // Process message asynchronously
+      processWhatsAppMessage({
+        phoneNumber,
+        messageId,
+        messageType: messageType === 'audio' ? 'audio' : 'text',
+        content,
+        audioId,
+        timestamp,
+        rawPayload: payload,
+        replyToMessage: replyToMessage || undefined,
+      }).catch((error) => {
+        console.error('❌ Error processing Gupshup message:', error);
+      });
+
+      return NextResponse.json({ status: 'ok' }, { status: 200 });
+    }
+
+    // ============================================
+    // META CLOUD API FORMAT (Legacy Support)
+    // ============================================
+    if (isMeta) {
+      // Process each entry
+      for (const entry of body.entry) {
+        const changes = entry.changes || [];
         
-        // Check if this is a message event
-        if (!value.messages || !Array.isArray(value.messages)) {
-          continue;
-        }
-
-        // Process each message
-        for (const message of value.messages) {
-          const phoneNumber = message.from; // Sender's phone number
-          const messageId = message.id;
-          const timestamp = message.timestamp;
-
-          // Determine message type and extract content
-          let messageType: 'text' | 'audio' = 'text';
-          let content: string | null = null;
-          let audioId: string | null = null;
-          let replyToMessage: string | null = null;
-
-          // Extract reply context if present (WhatsApp reply feature)
-          if (message.context && message.context.message) {
-            replyToMessage = message.context.message;
-            console.log(`↩️ Reply detected: "${replyToMessage}"`);
-          }
-
-          if (message.type === 'text' && message.text) {
-            messageType = 'text';
-            content = message.text.body;
-          } else if (message.type === 'audio' && message.audio) {
-            messageType = 'audio';
-            // Gupshup provides direct URL in audio.id or audio.url
-            // Meta provides media ID that needs separate API call
-            audioId = message.audio.url || message.audio.id;
-            // Audio transcription will be handled in the processor
-          } else {
-            // Unsupported message type (image, video, document, etc.)
-            console.log(`⚠️ Unsupported message type: ${message.type}`);
+        for (const change of changes) {
+          if (change.field !== 'messages') {
             continue;
           }
 
-          // Process message asynchronously (don't block webhook response)
-          // WhatsApp requires a 200 response within 20 seconds
-          processWhatsAppMessage({
-            phoneNumber,
-            messageId,
-            messageType,
-            content,
-            audioId,
-            timestamp,
-            rawPayload: message,
-            replyToMessage: replyToMessage || undefined,
-          }).catch((error) => {
-            console.error('❌ Error processing message:', error);
-          });
+          const value = change.value;
+          
+          if (!value.messages || !Array.isArray(value.messages)) {
+            continue;
+          }
+
+          // Process each message
+          for (const message of value.messages) {
+            const phoneNumber = message.from;
+            const messageId = message.id;
+            const timestamp = message.timestamp;
+
+            let messageType: 'text' | 'audio' = 'text';
+            let content: string | null = null;
+            let audioId: string | null = null;
+            let replyToMessage: string | null = null;
+
+            // Extract reply context
+            if (message.context && message.context.message) {
+              replyToMessage = message.context.message;
+              console.log(`↩️ Reply detected: "${replyToMessage}"`);
+            }
+
+            if (message.type === 'text' && message.text) {
+              messageType = 'text';
+              content = message.text.body;
+            } else if (message.type === 'audio' && message.audio) {
+              messageType = 'audio';
+              audioId = message.audio.url || message.audio.id;
+            } else {
+              console.log(`⚠️ Unsupported Meta message type: ${message.type}`);
+              continue;
+            }
+
+            // Process message asynchronously
+            processWhatsAppMessage({
+              phoneNumber,
+              messageId,
+              messageType,
+              content,
+              audioId,
+              timestamp,
+              rawPayload: message,
+              replyToMessage: replyToMessage || undefined,
+            }).catch((error) => {
+              console.error('❌ Error processing Meta message:', error);
+            });
+          }
         }
       }
     }
@@ -149,7 +204,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error('❌ Webhook error:', error);
     
-    // Still return 200 to avoid WhatsApp retries on our errors
+    // Still return 200 to avoid provider retries on our errors
     return NextResponse.json(
       { status: 'error', message: 'Internal error' },
       { status: 200 }
