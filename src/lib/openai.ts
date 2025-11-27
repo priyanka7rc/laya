@@ -184,87 +184,64 @@ export async function logUsage(
 }
 
 // ============================================
-// WHISPER TRANSCRIPTION FOR WHATSAPP
+// WHISPER TRANSCRIPTION FOR GUPSHUP/WHATSAPP
 // ============================================
 
 /**
- * Download audio file from WhatsApp and transcribe with Whisper
+ * Download audio from Gupshup URL, transcribe with Whisper, and store permanently
  * 
- * WhatsApp audio flow:
- * 1. Get media URL from WhatsApp API
- * 2. Download audio file
+ * Gupshup audio flow:
+ * 1. Download audio file directly from Gupshup URL (simpler than Meta's 2-step)
+ * 2. Upload to Supabase Storage for permanent storage
  * 3. Send to Whisper API
- * 4. Return transcription
+ * 4. Return transcription + permanent URL
  */
 export async function transcribeAudioFromWhatsApp(
-  audioId: string
+  audioUrl: string,
+  userId?: string,
+  messageId?: string
 ): Promise<{ text: string; audioUrl: string }> {
   try {
-    // 1. Get media URL from WhatsApp
-    const mediaUrl = await getWhatsAppMediaUrl(audioId);
+    console.log('🎤 Downloading audio from Gupshup...');
     
-    // 2. Download audio file
-    const audioBuffer = await downloadWhatsAppMedia(mediaUrl);
+    // 1. Download audio file
+    const audioBuffer = await downloadGupshupMedia(audioUrl);
+    
+    // 2. Store audio permanently in Supabase Storage (if credentials provided)
+    let permanentUrl = audioUrl; // Default to Gupshup URL
+    
+    if (userId && messageId) {
+      try {
+        const storedUrl = await storeAudioInSupabase(audioBuffer, userId, messageId);
+        if (storedUrl) {
+          permanentUrl = storedUrl;
+          console.log('✅ Audio stored permanently:', permanentUrl);
+        }
+      } catch (storageError) {
+        console.warn('⚠️ Failed to store audio, using Gupshup URL:', storageError);
+      }
+    }
     
     // 3. Transcribe with Whisper
+    console.log('🎤 Transcribing with Whisper...');
     const transcription = await transcribeWithWhisper(audioBuffer);
     
     return {
       text: transcription,
-      audioUrl: mediaUrl,
+      audioUrl: permanentUrl,
     };
   } catch (error) {
-    console.error('❌ Error transcribing WhatsApp audio:', error);
+    console.error('❌ Error transcribing audio:', error);
     throw error;
   }
 }
 
 /**
- * Get media URL from WhatsApp Cloud API
+ * Download audio file from Gupshup's direct URL
  */
-async function getWhatsAppMediaUrl(mediaId: string): Promise<string> {
-  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
-  
-  if (!accessToken) {
-    throw new Error('WHATSAPP_ACCESS_TOKEN not configured');
-  }
-
+async function downloadGupshupMedia(mediaUrl: string): Promise<Buffer> {
   try {
-    // Get media URL from WhatsApp API
-    const response = await fetch(`https://graph.facebook.com/v18.0/${mediaId}`, {
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-      },
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to get media URL: ${response.statusText}`);
-    }
-
-    const data = await response.json();
-    return data.url;
-  } catch (error) {
-    console.error('Error getting WhatsApp media URL:', error);
-    throw error;
-  }
-}
-
-/**
- * Download media file from WhatsApp
- */
-async function downloadWhatsAppMedia(mediaUrl: string): Promise<Buffer> {
-  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
-  
-  if (!accessToken) {
-    throw new Error('WHATSAPP_ACCESS_TOKEN not configured');
-  }
-
-  try {
-    const response = await fetch(mediaUrl, {
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-      },
-    });
+    const response = await fetch(mediaUrl);
 
     if (!response.ok) {
       throw new Error(`Failed to download media: ${response.statusText}`);
@@ -273,8 +250,48 @@ async function downloadWhatsAppMedia(mediaUrl: string): Promise<Buffer> {
     const arrayBuffer = await response.arrayBuffer();
     return Buffer.from(arrayBuffer);
   } catch (error) {
-    console.error('Error downloading WhatsApp media:', error);
+    console.error('Error downloading Gupshup media:', error);
     throw error;
+  }
+}
+
+/**
+ * Store audio file in Supabase Storage
+ */
+async function storeAudioInSupabase(
+  audioBuffer: Buffer,
+  userId: string,
+  messageId: string
+): Promise<string | null> {
+  try {
+    const supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!
+    );
+
+    const fileName = `${userId}/${messageId}.ogg`;
+
+    const { data, error } = await supabase.storage
+      .from('whatsapp-audio')
+      .upload(fileName, audioBuffer, {
+        contentType: 'audio/ogg',
+        upsert: true,
+      });
+
+    if (error) {
+      console.error('Error uploading to Supabase Storage:', error);
+      return null;
+    }
+
+    // Get public URL
+    const { data: publicUrlData } = supabase.storage
+      .from('whatsapp-audio')
+      .getPublicUrl(fileName);
+
+    return publicUrlData.publicUrl;
+  } catch (error) {
+    console.error('Error in storeAudioInSupabase:', error);
+    return null;
   }
 }
 

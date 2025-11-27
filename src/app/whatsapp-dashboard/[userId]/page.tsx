@@ -52,9 +52,9 @@ interface Mood {
  */
 async function getUserPhone(userId: string): Promise<string | null> {
   const { data } = await supabase
-    .from('user_phone_numbers')
+    .from('whatsapp_users')
     .select('phone_number')
-    .eq('user_id', userId)
+    .eq('id', userId)
     .single();
 
   return data?.phone_number || null;

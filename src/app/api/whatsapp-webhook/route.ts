@@ -103,13 +103,22 @@ export async function POST(request: NextRequest) {
           let messageType: 'text' | 'audio' = 'text';
           let content: string | null = null;
           let audioId: string | null = null;
+          let replyToMessage: string | null = null;
+
+          // Extract reply context if present (WhatsApp reply feature)
+          if (message.context && message.context.message) {
+            replyToMessage = message.context.message;
+            console.log(`↩️ Reply detected: "${replyToMessage}"`);
+          }
 
           if (message.type === 'text' && message.text) {
             messageType = 'text';
             content = message.text.body;
           } else if (message.type === 'audio' && message.audio) {
             messageType = 'audio';
-            audioId = message.audio.id;
+            // Gupshup provides direct URL in audio.id or audio.url
+            // Meta provides media ID that needs separate API call
+            audioId = message.audio.url || message.audio.id;
             // Audio transcription will be handled in the processor
           } else {
             // Unsupported message type (image, video, document, etc.)
@@ -127,6 +136,7 @@ export async function POST(request: NextRequest) {
             audioId,
             timestamp,
             rawPayload: message,
+            replyToMessage: replyToMessage || undefined,
           }).catch((error) => {
             console.error('❌ Error processing message:', error);
           });

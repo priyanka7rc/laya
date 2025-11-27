@@ -5,11 +5,16 @@
 Add these to your `/Users/priyankavijayakumar/laya/.env.local` file:
 
 ```bash
-# WhatsApp Cloud API Configuration
-WHATSAPP_VERIFY_TOKEN=your-secure-verify-token-here
-WHATSAPP_ACCESS_TOKEN=your-whatsapp-access-token-here
-WHATSAPP_PHONE_NUMBER_ID=your-phone-number-id-here
-WHATSAPP_BUSINESS_ACCOUNT_ID=your-business-account-id-here
+# Gupshup Configuration
+GUPSHUP_APP_ID=your-app-id-here
+GUPSHUP_APP_NAME=your-app-name-here
+GUPSHUP_API_KEY=your-api-key-here
+GUPSHUP_SOURCE_NUMBER=919876543210
+
+# Conversation Context Window (configurable for testing)
+CONVERSATION_CONTEXT_ENABLED=true
+CONVERSATION_CONTEXT_HOURS=48
+CONVERSATION_CONTEXT_MAX_MESSAGES=20
 ```
 
 ### How to get WhatsApp credentials:

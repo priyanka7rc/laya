@@ -229,42 +229,81 @@ END $$;
 CREATE INDEX IF NOT EXISTS idx_tasks_source_message_id ON tasks(source_message_id);
 
 -- ============================================
--- 6. HELPER FUNCTIONS
+-- 6. WHATSAPP USERS TABLE (Separate from auth.users)
 -- ============================================
+-- For MVP: Use separate identity for WhatsApp users
+-- Later: Can migrate to unified auth.users if needed
 
--- Function to get or create user by phone number
-CREATE OR REPLACE FUNCTION get_or_create_user_by_phone(
-  p_phone_number TEXT,
-  p_country_code TEXT DEFAULT NULL
-)
-RETURNS UUID AS $$
-DECLARE
-  v_user_id UUID;
-  v_existing_phone_user_id UUID;
+CREATE TABLE IF NOT EXISTS whatsapp_users (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  phone_number TEXT NOT NULL UNIQUE,
+  name TEXT,
+  country_code TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+  last_active TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+
+-- Enable RLS
+ALTER TABLE whatsapp_users ENABLE ROW LEVEL SECURITY;
+
+-- RLS Policy (service role can manage all)
+CREATE POLICY "Service role can manage whatsapp users"
+  ON whatsapp_users FOR ALL
+  USING (true);
+
+-- Index for fast lookup
+CREATE INDEX IF NOT EXISTS idx_whatsapp_users_phone ON whatsapp_users(phone_number);
+CREATE INDEX IF NOT EXISTS idx_whatsapp_users_last_active ON whatsapp_users(last_active DESC);
+
+-- ============================================
+-- 7. UPDATE FOREIGN KEYS TO USE WHATSAPP_USERS
+-- ============================================
+-- Remove user_phone_numbers table (no longer needed)
+DROP TABLE IF EXISTS user_phone_numbers CASCADE;
+
+-- Update messages table to reference whatsapp_users instead
+DO $$ 
 BEGIN
-  -- Check if phone number already exists
-  SELECT user_id INTO v_existing_phone_user_id
-  FROM user_phone_numbers
-  WHERE phone_number = p_phone_number;
-
-  IF v_existing_phone_user_id IS NOT NULL THEN
-    RETURN v_existing_phone_user_id;
+  -- Drop existing user_id constraint if it exists
+  IF EXISTS (
+    SELECT 1 FROM information_schema.table_constraints 
+    WHERE table_name = 'messages' AND constraint_name = 'messages_user_id_fkey'
+  ) THEN
+    ALTER TABLE messages DROP CONSTRAINT messages_user_id_fkey;
   END IF;
+  
+  -- Add new constraint to whatsapp_users
+  ALTER TABLE messages ADD CONSTRAINT messages_whatsapp_user_id_fkey 
+    FOREIGN KEY (user_id) REFERENCES whatsapp_users(id) ON DELETE CASCADE;
+END $$;
 
-  -- Create new user in auth.users (this would typically be done via Supabase Auth)
-  -- For now, we'll just create a placeholder - in production, use Supabase Auth properly
-  -- This is a simplified version for the MVP
-  INSERT INTO auth.users (id, email)
-  VALUES (gen_random_uuid(), p_phone_number || '@whatsapp.laya.app')
-  RETURNING id INTO v_user_id;
+-- Update tasks table
+DO $$ 
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.table_constraints 
+    WHERE table_name = 'tasks' AND constraint_name = 'tasks_user_id_fkey'
+  ) THEN
+    ALTER TABLE tasks DROP CONSTRAINT tasks_user_id_fkey;
+  END IF;
+  
+  ALTER TABLE tasks ADD CONSTRAINT tasks_whatsapp_user_id_fkey 
+    FOREIGN KEY (user_id) REFERENCES whatsapp_users(id) ON DELETE CASCADE;
+END $$;
 
-  -- Link phone number to user
-  INSERT INTO user_phone_numbers (user_id, phone_number, country_code, verified)
-  VALUES (v_user_id, p_phone_number, p_country_code, true);
+-- Update groceries table
+DO $$ 
+BEGIN
+  ALTER TABLE groceries ADD CONSTRAINT groceries_whatsapp_user_id_fkey 
+    FOREIGN KEY (user_id) REFERENCES whatsapp_users(id) ON DELETE CASCADE;
+END $$;
 
-  RETURN v_user_id;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+-- Update moods table
+DO $$ 
+BEGIN
+  ALTER TABLE moods ADD CONSTRAINT moods_whatsapp_user_id_fkey 
+    FOREIGN KEY (user_id) REFERENCES whatsapp_users(id) ON DELETE CASCADE;
+END $$;
 
 -- ============================================
 -- MIGRATION COMPLETE

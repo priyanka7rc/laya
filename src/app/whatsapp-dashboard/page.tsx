@@ -24,40 +24,36 @@ interface User {
  */
 async function getWhatsAppUsers(): Promise<User[]> {
   try {
-    // Get all users with phone numbers
-    const { data: phoneNumbers, error: phoneError } = await supabase
-      .from('user_phone_numbers')
-      .select('user_id, phone_number');
+    // Get all WhatsApp users
+    const { data: users, error: usersError } = await supabase
+      .from('whatsapp_users')
+      .select('id, phone_number, last_active')
+      .order('last_active', { ascending: false });
 
-    if (phoneError) {
-      console.error('Error fetching phone numbers:', phoneError);
+    if (usersError) {
+      console.error('Error fetching WhatsApp users:', usersError);
       return [];
     }
 
-    // Get message stats for each user
+    // Get message count for each user
     const usersWithStats: User[] = [];
 
-    for (const phone of phoneNumbers || []) {
-      const { data: messages } = await supabase
+    for (const user of users || []) {
+      const { count } = await supabase
         .from('messages')
-        .select('created_at')
-        .eq('user_id', phone.user_id)
-        .eq('channel', 'whatsapp')
-        .order('created_at', { ascending: false })
-        .limit(1);
+        .select('*', { count: 'exact', head: true })
+        .eq('user_id', user.id)
+        .eq('channel', 'whatsapp');
 
       usersWithStats.push({
-        user_id: phone.user_id,
-        phone_number: phone.phone_number,
-        message_count: messages?.length || 0,
-        last_message_time: messages?.[0]?.created_at || 'Never',
+        user_id: user.id,
+        phone_number: user.phone_number,
+        message_count: count || 0,
+        last_message_time: user.last_active || 'Never',
       });
     }
 
-    // Sort by most recent activity
-    return usersWithStats.sort((a, b) => 
-      new Date(b.last_message_time).getTime() - new Date(a.last_message_time).getTime()
-    );
+    return usersWithStats;
   } catch (error) {
     console.error('Error in getWhatsAppUsers:', error);
     return [];

@@ -5,19 +5,72 @@
  * Docs: https://developers.facebook.com/docs/whatsapp/cloud-api/reference/messages
  */
 
+import { createClient } from '@supabase/supabase-js';
+
 // ============================================
 // CONFIGURATION
 // ============================================
 
-const WHATSAPP_API_VERSION = 'v18.0';
-const WHATSAPP_API_BASE = `https://graph.facebook.com/${WHATSAPP_API_VERSION}`;
+const GUPSHUP_API_BASE = 'https://api.gupshup.io/wa/api/v1';
+
+// Supabase client for 24-hour check
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+// ============================================
+// 24-HOUR SESSION WINDOW CHECK
+// ============================================
+
+/**
+ * Check if we can send freeform messages to a user
+ * WhatsApp only allows freeform messages within 24 hours of user's last message
+ * After 24 hours, must use pre-approved templates
+ * 
+ * @param userId - WhatsApp user ID
+ * @returns true if within 24-hour window, false otherwise
+ */
+export async function canSendFreeformMessage(userId: string): Promise<boolean> {
+  try {
+    const { data } = await supabase
+      .from('messages')
+      .select('created_at')
+      .eq('user_id', userId)
+      .eq('direction', 'inbound')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    if (!data) {
+      // No inbound messages yet, can't send freeform
+      console.log('⚠️ No inbound messages - cannot send freeform');
+      return false;
+    }
+
+    const hoursSinceLastMessage = 
+      (Date.now() - new Date(data.created_at).getTime()) / (1000 * 60 * 60);
+
+    const canSend = hoursSinceLastMessage < 24;
+    
+    if (!canSend) {
+      console.log(`⏰ 24-hour window expired (${Math.round(hoursSinceLastMessage)}hrs ago)`);
+    }
+
+    return canSend;
+  } catch (error) {
+    console.error('Error checking 24-hour window:', error);
+    // On error, assume we can send (fail open)
+    return true;
+  }
+}
 
 // ============================================
 // SEND MESSAGE
 // ============================================
 
 /**
- * Send a text message to a WhatsApp user
+ * Send a text message to a WhatsApp user via Gupshup
  * 
  * @param phoneNumber - Recipient's phone number (with country code, no +)
  * @param message - Text message to send (max 4096 characters)
@@ -27,15 +80,15 @@ export async function sendWhatsAppMessage(
   phoneNumber: string,
   message: string
 ): Promise<string | null> {
-  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
-  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  const apiKey = process.env.GUPSHUP_API_KEY;
+  const sourceNumber = process.env.GUPSHUP_SOURCE_NUMBER;
 
-  // For local testing without WhatsApp credentials
-  if (!accessToken || !phoneNumberId) {
-    console.log('📤 [STUB] Would send WhatsApp message:');
+  // For local testing without Gupshup credentials
+  if (!apiKey || !sourceNumber) {
+    console.log('📤 [STUB] Would send WhatsApp message via Gupshup:');
     console.log(`   To: ${phoneNumber}`);
     console.log(`   Message: ${message}`);
-    console.log('   (Add WHATSAPP_ACCESS_TOKEN and WHATSAPP_PHONE_NUMBER_ID to .env.local to enable real sending)');
+    console.log('   (Add GUPSHUP_API_KEY and GUPSHUP_SOURCE_NUMBER to .env.local to enable real sending)');
     return 'stub-message-id';
   }
 
@@ -49,35 +102,34 @@ export async function sendWhatsAppMessage(
     const cleanPhone = phoneNumber.replace(/[^\d]/g, '');
 
     const response = await fetch(
-      `${WHATSAPP_API_BASE}/${phoneNumberId}/messages`,
+      `${GUPSHUP_API_BASE}/msg`,
       {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
+          'apikey': apiKey,
+          'Content-Type': 'application/x-www-form-urlencoded',
         },
-        body: JSON.stringify({
-          messaging_product: 'whatsapp',
-          recipient_type: 'individual',
-          to: cleanPhone,
-          type: 'text',
-          text: {
-            preview_url: false,
-            body: truncatedMessage,
-          },
+        body: new URLSearchParams({
+          channel: 'whatsapp',
+          source: sourceNumber,
+          destination: cleanPhone,
+          message: JSON.stringify({
+            type: 'text',
+            text: truncatedMessage,
+          }),
         }),
       }
     );
 
     if (!response.ok) {
-      const errorData = await response.json();
-      console.error('❌ WhatsApp API error:', errorData);
-      throw new Error(`WhatsApp API error: ${response.statusText}`);
+      const errorData = await response.text();
+      console.error('❌ Gupshup API error:', errorData);
+      throw new Error(`Gupshup API error: ${response.statusText}`);
     }
 
     const data = await response.json();
-    console.log('✅ Message sent:', data.messages[0].id);
-    return data.messages[0].id;
+    console.log('✅ Message sent via Gupshup:', data.messageId || data);
+    return data.messageId || 'gupshup-message-sent';
   } catch (error) {
     console.error('❌ Error sending WhatsApp message:', error);
     return null;

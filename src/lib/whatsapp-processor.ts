@@ -36,9 +36,10 @@ export interface IncomingMessage {
   messageId: string;
   messageType: 'text' | 'audio';
   content: string | null; // Text content or null if audio
-  audioId: string | null; // WhatsApp media ID for audio
+  audioId: string | null; // WhatsApp media ID for audio (Gupshup: direct URL)
   timestamp: string;
   rawPayload: any;
+  replyToMessage?: string; // Original message being replied to
 }
 
 // ============================================
@@ -64,7 +65,12 @@ export async function processWhatsAppMessage(message: IncomingMessage): Promise<
 
     if (message.messageType === 'audio' && message.audioId) {
       console.log('🎤 Transcribing audio message...');
-      const transcription = await transcribeAudioFromWhatsApp(message.audioId);
+      // audioId for Gupshup is the direct media URL
+      const transcription = await transcribeAudioFromWhatsApp(
+        message.audioId,
+        userId,
+        message.messageId
+      );
       finalText = transcription.text;
       audioUrl = transcription.audioUrl;
       console.log(`📝 Transcription: "${finalText}"`);
@@ -86,6 +92,15 @@ export async function processWhatsAppMessage(message: IncomingMessage): Promise<
 
     // 4. Get recent conversation context
     const context = await getConversationContext(userId);
+
+    // 4a. If this is a reply, add the original message to context
+    if (message.replyToMessage) {
+      console.log(`↩️ User replying to: "${message.replyToMessage}"`);
+      context.push({
+        role: 'assistant',
+        content: `[User is replying to: "${message.replyToMessage}"]`,
+      });
+    }
 
     // 5. Process with Laya brain
     console.log('🧠 Processing with Laya...');
@@ -125,33 +140,44 @@ export async function processWhatsAppMessage(message: IncomingMessage): Promise<
 // ============================================
 
 /**
- * Get or create user by phone number
+ * Get or create WhatsApp user by phone number
  */
 async function getOrCreateUser(phoneNumber: string): Promise<string | null> {
   try {
     // Check if phone number exists
-    const { data: existingPhone } = await supabase
-      .from('user_phone_numbers')
-      .select('user_id')
+    const { data: existingUser } = await supabase
+      .from('whatsapp_users')
+      .select('id')
       .eq('phone_number', phoneNumber)
       .single();
 
-    if (existingPhone) {
-      return existingPhone.user_id;
+    if (existingUser) {
+      // Update last_active timestamp
+      await supabase
+        .from('whatsapp_users')
+        .update({ last_active: new Date().toISOString() })
+        .eq('id', existingUser.id);
+      
+      return existingUser.id;
     }
 
-    // Use the database function to create user
-    const { data, error } = await supabase.rpc('get_or_create_user_by_phone', {
-      p_phone_number: phoneNumber,
-      p_country_code: null,
-    });
+    // Create new WhatsApp user
+    const { data: newUser, error } = await supabase
+      .from('whatsapp_users')
+      .insert({
+        phone_number: phoneNumber,
+        last_active: new Date().toISOString(),
+      })
+      .select('id')
+      .single();
 
     if (error) {
-      console.error('Error creating user:', error);
+      console.error('Error creating WhatsApp user:', error);
       return null;
     }
 
-    return data;
+    console.log(`✅ Created new WhatsApp user: ${phoneNumber}`);
+    return newUser.id;
   } catch (error) {
     console.error('Error in getOrCreateUser:', error);
     return null;
@@ -231,29 +257,52 @@ async function saveOutboundMessage(params: {
 
 /**
  * Get recent conversation context for a user
+ * Configurable via environment variables:
+ * - CONVERSATION_CONTEXT_ENABLED: true/false
+ * - CONVERSATION_CONTEXT_HOURS: number of hours to look back (default: 48)
+ * - CONVERSATION_CONTEXT_MAX_MESSAGES: max messages to load (default: 20)
  */
 async function getConversationContext(userId: string): Promise<ConversationMessage[]> {
   try {
+    // Check if context is enabled
+    const contextEnabled = process.env.CONVERSATION_CONTEXT_ENABLED !== 'false';
+    if (!contextEnabled) {
+      console.log('📭 Conversation context disabled');
+      return [];
+    }
+
+    // Get configuration
+    const contextHours = parseInt(process.env.CONVERSATION_CONTEXT_HOURS || '48', 10);
+    const maxMessages = parseInt(process.env.CONVERSATION_CONTEXT_MAX_MESSAGES || '20', 10);
+
+    // Calculate time threshold
+    const hoursAgo = new Date(Date.now() - contextHours * 60 * 60 * 1000).toISOString();
+
+    console.log(`📚 Loading context: last ${contextHours}hrs, max ${maxMessages} messages`);
+
     const { data, error } = await supabase
       .from('messages')
-      .select('role, content')
+      .select('role, content, created_at')
       .eq('user_id', userId)
       .eq('channel', 'whatsapp')
+      .gte('created_at', hoursAgo)
       .order('created_at', { ascending: false })
-      .limit(10);
+      .limit(maxMessages);
 
     if (error) {
       console.error('Error fetching conversation context:', error);
       return [];
     }
 
-    // Reverse to get chronological order
-    return (data || [])
+    const contextMessages = (data || [])
       .reverse()
       .map((msg) => ({
         role: msg.role === 'user' ? 'user' : 'assistant',
         content: msg.content,
       }));
+
+    console.log(`📊 Loaded ${contextMessages.length} context messages`);
+    return contextMessages;
   } catch (error) {
     console.error('Error in getConversationContext:', error);
     return [];

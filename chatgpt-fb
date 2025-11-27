@@ -1,0 +1,142 @@
+## 1️⃣ Critical issue: inserting into `auth.users` from SQL
+
+**What Cursor said:**
+Direct `INSERT INTO auth.users` from a SQL function will fail / is a bad idea. Use Supabase Auth Admin API or a separate users table.
+
+**I mostly agree.**
+
+* Supabase does technically allow inserts into `auth.users` **only** via the service role key or auth admin API – but doing it from a Postgres function is brittle and easy to misconfigure.
+* You don’t want your WhatsApp onboarding to depend on low-level auth internals. It also makes future migrations painful.
+
+**What I’d do for Laya:**
+
+* **Short term & simplest:** go with their **“separate WhatsApp users table”** (Option B).
+
+  ```sql
+  create table whatsapp_users (
+    id uuid primary key default gen_random_uuid(),
+    phone_number text not null unique,
+    created_at timestamptz not null default now()
+  );
+  ```
+
+  and treat this as your identity for the WhatsApp channel.
+
+* **Later**, if you want one unified identity across web/app/WhatsApp, then use the **Supabase Auth Admin API** to create real auth users (their Option A) – but that’s a v2 problem, not critical for getting the MVP live.
+
+So: ✅ agree it’s a blocker, ✅ agree we should not be inserting into `auth.users` directly, ✅ recommend **Option B now, Option A later**.
+
+---
+
+## 2️⃣ Gupshup audio URL expiry
+
+**What Cursor said:**
+URLs expire; you should download the file and store it (Supabase Storage / S3).
+
+**Agree 100%.**
+
+* For Whisper you *already* have to download the audio to send to OpenAI.
+* At that point it’s almost free to also upload the buffer into Supabase Storage and persist a stable URL for your dashboard.
+
+I’d definitely adopt this suggestion.
+
+---
+
+## 3️⃣ 24-hour WhatsApp session window
+
+**What Cursor said:**
+You must check whether you’re inside the 24-hour user-initiated window before sending free-form replies; otherwise use templates.
+
+**Agree with the principle; minor tweak on the implementation.**
+
+* Yes, you **must** respect the 24-hour rule:
+
+  * inside 24h → free-form replies allowed
+  * outside 24h → only pre-approved templates
+* Their suggested helper `canSendFreeformMessage()` using the last inbound message timestamp is exactly the right pattern.
+
+**Tweak:** in addition to checking the DB, I’d also log whenever you *do* send a template so you can track how often you hit the “paid” path.
+
+So: ✅ concept is correct, ✅ we should add this check around any proactive sends.
+
+---
+
+## 4️⃣ Rate limits (Gupshup & OpenAI)
+
+**What Cursor said:**
+Add per-user rate limiting; reuse your existing rate-limit helper.
+
+**Agree this is “should have”, not “must-have for first test”.**
+
+* For a 30–40 user closed beta you probably won’t hit hard limits, but:
+
+  * rate limiting protects you if a bug causes a loop
+  * it’s useful groundwork for public launch
+* I’d keep this in the **“Before public beta”** bucket, not a hard blocker to get your own testing going.
+
+---
+
+## 5️⃣ Error handling & retry for outbound messages
+
+**What Cursor said:**
+Webhook already returns 200 quickly (good), but add retry logic for failed sends.
+
+**Agree in spirit.**
+
+* Webhook 200 behaviour is correct – we don’t want Gupshup to keep retrying the webhook.
+* Adding a small retry loop (with backoff) on the **outbound send** is reasonable, especially for transient network failures.
+
+Again, this is **nice to have for reliability**, not blocking MVP.
+
+---
+
+## 6️⃣ Conversation context window
+
+**What Cursor said:**
+Current code loads last 10 messages; maybe restrict to last 24h or paginate.
+
+**Partially agree.**
+
+* Limiting context by **time** (e.g. last 24h) is a good heuristic for cost control and relevance.
+* For your MVP scale the difference between 10 messages vs 10 messages within 24h is small, but it’s a good pattern.
+
+I’d probably do:
+
+* “last 20 messages **and** only from last 48h” – simple and safe.
+* Later you can get fancier (summaries, long-term memory, etc.).
+
+---
+
+## 7️⃣ Overall architecture feedback
+
+Cursor said the overall approach is **90% solid** – I agree:
+
+* ✅ Modular “Laya Brain” service reused across channels – good.
+* ✅ Webhook returning 200 fast – good.
+* ✅ Separate messages table, tasks, etc. – good structure.
+
+The **only truly blocking change** is the `auth.users` insertion path.
+
+---
+
+## 🔁 Revised action plan I’d recommend
+
+**Must fix before you test end-to-end:**
+
+1. **Stop writing into `auth.users` from SQL.**
+
+   * Quick path: create `whatsapp_users` table and use that as your identity.
+2. **Implement 24-hour session check** before sending non-template messages.
+3. **Download & store audio** in Supabase Storage when you receive it, instead of relying on Gupshup URLs.
+
+**Strongly recommended before inviting real users:**
+
+4. Add simple per-user rate limiting.
+5. Add retry wrapper around `sendWhatsAppMessage`.
+6. Tighten context loading (e.g. last 20 messages within 48h).
+
+Everything else in the Cursor feedback is either aligned with what we already planned, or a sensible hardening step.
+
+---
+
+If you paste your current `supabase-whatsapp-migration.sql` and the user-creation / webhook code here, I can mark up *exactly* what to delete/change and give you the updated versions so you’re not guessing.
