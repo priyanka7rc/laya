@@ -122,9 +122,10 @@ async function getMoods(userId: string): Promise<Mood[]> {
 export default async function UserDetailPage({
   params,
 }: {
-  params: { userId: string };
+  params: Promise<{ userId: string }>;
 }) {
-  const userId = params.userId;
+  // Await params in Next.js 15+
+  const { userId } = await params;
   
   const [phoneNumber, messages, tasks, groceries, moods] = await Promise.all([
     getUserPhone(userId),
