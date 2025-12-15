@@ -10,11 +10,11 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.78.0",
-    "next": "16.0.1",
+    "next": "^16.0.10",
     "openai": "^6.9.1",
     "posthog-js": "^1.289.0",
-    "react": "19.2.0",
-    "react-dom": "19.2.0",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
     "zod": "^4.1.12"
   },
   "devDependencies": {
@@ -24,7 +24,7 @@
     "@types/react-dom": "^19",
     "babel-plugin-react-compiler": "1.0.0",
     "eslint": "^9",
-    "eslint-config-next": "16.0.1",
+    "eslint-config-next": "^16.0.10",
     "tailwindcss": "^4",
     "typescript": "^5"
   }
