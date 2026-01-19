@@ -7,42 +7,19 @@ import ProtectedRoute from '@/components/ProtectedRoute';
 import { Card, Button } from '@/components/ui';
 import { useToast } from '@/hooks/useToast';
 import { useRouter } from 'next/navigation';
+import { Dish, RecipeVariant, IngredientJSON, StepJSON, RecipeSourceType } from '@/types/relish';
 
-interface Recipe {
-  id: string;
-  title: string;
-  duration_min: number | null;
-  servings: number | null;
-  created_at: string;
-}
-
-interface Ingredient {
-  id: string;
-  recipe_id: string;
-  item: string;
-  qty: number | null;
-  unit: string | null;
-}
-
-interface Instruction {
-  id: string;
-  recipe_id: string;
-  step_number: number;
-  text: string;
-}
-
-interface RecipeWithDetails extends Recipe {
-  ingredients: Ingredient[];
-  instructions: Instruction[];
+interface DishWithDetails extends Dish {
+  recipe_variants: RecipeVariant[];
 }
 
 export default function MealsPage() {
   const { user } = useAuth();
   const { toast } = useToast();
   const router = useRouter();
-  const [recipes, setRecipes] = useState<Recipe[]>([]);
-  const [expandedRecipe, setExpandedRecipe] = useState<string | null>(null);
-  const [recipeDetails, setRecipeDetails] = useState<Record<string, RecipeWithDetails>>({});
+  const [dishes, setDishes] = useState<Dish[]>([]);
+  const [expandedDish, setExpandedDish] = useState<string | null>(null);
+  const [dishDetails, setDishDetails] = useState<Record<string, DishWithDetails>>({});
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   
@@ -58,73 +35,65 @@ export default function MealsPage() {
 
   useEffect(() => {
     if (user) {
-      fetchRecipes();
+      fetchDishes();
     }
   }, [user]);
 
-  const fetchRecipes = async () => {
+  const fetchDishes = async () => {
     try {
       const { data, error } = await supabase
-        .from('recipes')
-        .select('*')
-        .eq('user_id', user?.id)
+        .from('dishes')
+        .select(`
+          *,
+          recipe_variants!left(*)
+        `)
         .order('created_at', { ascending: false });
 
       if (error) throw error;
-      setRecipes(data || []);
+      setDishes(data || []);
     } catch (err: any) {
-      console.error('Error fetching recipes:', err);
-      toast.error('Failed to load recipes', 'Please try again');
+      console.error('Error fetching dishes:', err);
+      toast.error('Failed to load dishes', 'Please try again');
     } finally {
       setLoading(false);
     }
   };
 
-  const fetchRecipeDetails = async (recipeId: string) => {
-    if (recipeDetails[recipeId]) {
+  const fetchDishDetails = async (dishId: string) => {
+    if (dishDetails[dishId]) {
       return; // Already loaded
     }
 
     try {
-      const [ingredientsRes, instructionsRes] = await Promise.all([
-        supabase
-          .from('ingredients')
-          .select('*')
-          .eq('recipe_id', recipeId)
-          .order('id', { ascending: true }),
-        supabase
-          .from('instructions')
-          .select('*')
-          .eq('recipe_id', recipeId)
-          .order('step_number', { ascending: true }),
-      ]);
+      const { data, error } = await supabase
+        .from('dishes')
+        .select(`
+          *,
+          recipe_variants!left(*)
+        `)
+        .eq('id', dishId)
+        .single();
 
-      if (ingredientsRes.error) throw ingredientsRes.error;
-      if (instructionsRes.error) throw instructionsRes.error;
+      if (error) throw error;
 
-      const recipe = recipes.find(r => r.id === recipeId);
-      if (recipe) {
-        setRecipeDetails(prev => ({
+      if (data) {
+        setDishDetails(prev => ({
           ...prev,
-          [recipeId]: {
-            ...recipe,
-            ingredients: ingredientsRes.data || [],
-            instructions: instructionsRes.data || [],
-          }
+          [dishId]: data as DishWithDetails
         }));
       }
     } catch (err: any) {
-      console.error('Error fetching recipe details:', err);
-      toast.error('Failed to load recipe details', 'Please try again');
+      console.error('Error fetching dish details:', err);
+      toast.error('Failed to load dish details', 'Please try again');
     }
   };
 
-  const toggleRecipe = (recipeId: string) => {
-    if (expandedRecipe === recipeId) {
-      setExpandedRecipe(null);
+  const toggleDish = (dishId: string) => {
+    if (expandedDish === dishId) {
+      setExpandedDish(null);
     } else {
-      setExpandedRecipe(recipeId);
-      fetchRecipeDetails(recipeId);
+      setExpandedDish(dishId);
+      fetchDishDetails(dishId);
     }
   };
 
@@ -174,57 +143,66 @@ export default function MealsPage() {
 
     setSaving(true);
     try {
-      // Insert recipe
-      const { data: recipe, error: recipeError } = await supabase
-        .from('recipes')
+      // 1. Create or find dish
+      let dishId: string;
+      const { data: existingDish, error: dishFetchError } = await supabase
+        .from('dishes')
+        .select('id')
+        .eq('canonical_name', formTitle.trim())
+        .maybeSingle();
+
+      if (existingDish) {
+        dishId = existingDish.id;
+      } else {
+        const { data: newDish, error: newDishError } = await supabase
+          .from('dishes')
         .insert([{
-          user_id: user?.id,
-          title: formTitle.trim(),
-          duration_min: formDuration ? parseInt(formDuration) : null,
-          servings: formServings ? parseInt(formServings) : null,
+            canonical_name: formTitle.trim(),
+            cuisine_tags: [],
+            ontology_tokens: [],
+            typical_meal_slots: ['lunch', 'dinner'],
         }])
-        .select()
+          .select('id')
         .single();
+        if (newDishError) throw newDishError;
+        dishId = newDish.id;
+      }
 
-      if (recipeError) throw recipeError;
-
-      // Insert ingredients
-      const ingredientsToInsert = formIngredients
+      // 2. Prepare ingredients as JSONB
+      const ingredientsJson: IngredientJSON[] = formIngredients
         .filter(ing => ing.item.trim())
         .map(ing => ({
-          recipe_id: recipe.id,
-          item: ing.item.trim(),
+          name: ing.item.trim(),
           qty: ing.qty ? parseFloat(ing.qty) : null,
           unit: ing.unit.trim() || null,
         }));
 
-      if (ingredientsToInsert.length > 0) {
-        const { error: ingredientsError } = await supabase
-          .from('ingredients')
-          .insert(ingredientsToInsert);
-        
-        if (ingredientsError) throw ingredientsError;
-      }
-
-      // Insert instructions
-      const stepsToInsert = formSteps
+      // 3. Prepare steps as JSONB
+      const stepsJson: StepJSON[] = formSteps
         .filter(step => step.trim())
         .map((step, idx) => ({
-          recipe_id: recipe.id,
-          step_number: idx + 1,
-          text: step.trim(),
+          step_no: idx + 1,
+          body: step.trim(),
         }));
 
-      if (stepsToInsert.length > 0) {
-        const { error: stepsError } = await supabase
-          .from('instructions')
-          .insert(stepsToInsert);
+      // 4. Insert recipe variant
+      const { error: variantError } = await supabase
+        .from('recipe_variants')
+        .insert([{
+          dish_id: dishId,
+          scope_user_id: user?.id,
+          servings_default: formServings ? parseInt(formServings) : null,
+          prep_time_min: formDuration ? parseInt(formDuration) : null,
+          ingredients_json: ingredientsJson,
+          steps_json: stepsJson,
+          source_type: RecipeSourceType.USER_CHOICE,
+          validator_score: 1.0,
+        }]);
         
-        if (stepsError) throw stepsError;
-      }
+      if (variantError) throw variantError;
 
       // Refresh list
-      await fetchRecipes();
+      await fetchDishes();
       resetForm();
       toast.success('Recipe saved!', formTitle.trim());
     } catch (err: any) {
@@ -246,17 +224,18 @@ export default function MealsPage() {
                 🍽️ Recipes
               </h1>
               <p className="text-gray-600 dark:text-gray-400">
-                {recipes.length} {recipes.length === 1 ? 'recipe' : 'recipes'}
+                {dishes.length} {dishes.length === 1 ? 'dish' : 'dishes'}
               </p>
             </div>
             <div className="flex gap-2">
-              <Button
+              {/* Groceries button - Disabled while grocery feature is in development */}
+              {/* <Button
                 variant="secondary"
                 onClick={() => router.push('/meals/groceries')}
                 className="bg-gradient-to-br from-green-900/50 to-green-800/30 border-green-700/50 hover:from-green-900/60 hover:to-green-800/40"
               >
                 🛒 Groceries
-              </Button>
+              </Button> */}
               <Button
                 onClick={() => setShowForm(!showForm)}
                 className="bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-700 hover:to-red-700"
@@ -436,7 +415,7 @@ export default function MealsPage() {
                 </Card>
               ))}
             </div>
-          ) : recipes.length === 0 ? (
+          ) : dishes.length === 0 ? (
             <Card className="text-center py-12">
               <div className="inline-flex items-center justify-center w-16 h-16 bg-orange-100 dark:bg-orange-900/30 rounded-full mb-4">
                 <span className="text-3xl">✨</span>
@@ -454,33 +433,64 @@ export default function MealsPage() {
                 + Add Recipe
               </Button>
             </Card>
+          ) : dishes.length === 0 ? (
+            // Empty State
+            <Card className="text-center py-12">
+              <div className="flex flex-col items-center gap-4">
+                <div className="text-6xl">🍽️</div>
+                <div>
+                  <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
+                    No recipes yet
+                  </h3>
+                  <p className="text-gray-600 dark:text-gray-400 mb-4">
+                    Add your first recipe or get started with your meal plan
+                  </p>
+                </div>
+                <div className="flex gap-3">
+                  <Button
+                    onClick={() => setShowForm(true)}
+                    className="bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-700 hover:to-red-700"
+                  >
+                    + Add Recipe
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    onClick={() => router.push('/mealplan')}
+                    className="bg-gradient-to-br from-blue-900/50 to-blue-800/30 border-blue-700/50 hover:from-blue-900/60 hover:to-blue-800/40"
+                  >
+                    📅 Go to Meal Plan
+                  </Button>
+                </div>
+              </div>
+            </Card>
           ) : (
             <div className="grid gap-3">
-              {recipes.map((recipe) => {
-                const isExpanded = expandedRecipe === recipe.id;
-                const details = recipeDetails[recipe.id];
+              {dishes.map((dish) => {
+                const isExpanded = expandedDish === dish.id;
+                const details = dishDetails[dish.id];
+                const variant = details?.recipe_variants?.[0]; // Get first variant
 
                 return (
                   <Card
-                    key={recipe.id}
+                    key={dish.id}
                     className="hover:border-orange-700/50 transition-all cursor-pointer"
-                    onClick={() => toggleRecipe(recipe.id)}
+                    onClick={() => toggleDish(dish.id)}
                   >
-                    {/* Recipe Header */}
+                    {/* Dish Header */}
                     <div className="flex items-start justify-between">
                       <div className="flex-1">
                         <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
-                          {recipe.title}
+                          {dish.canonical_name}
                         </h3>
                         <div className="flex items-center gap-3 text-sm text-gray-400">
-                          {recipe.duration_min && (
+                          {variant?.prep_time_min && (
                             <span className="flex items-center gap-1">
-                              ⏱️ {recipe.duration_min} min
+                              ⏱️ {variant.prep_time_min} min
                             </span>
                           )}
-                          {recipe.servings && (
+                          {variant?.servings_default && (
                             <span className="flex items-center gap-1">
-                              🍽️ {recipe.servings} servings
+                              🍽️ {variant.servings_default} servings
                             </span>
                           )}
                         </div>
@@ -507,23 +517,23 @@ export default function MealsPage() {
                       </button>
                     </div>
 
-                    {/* Recipe Details (Accordion) */}
-                    {isExpanded && details && (
+                    {/* Dish Details (Accordion) */}
+                    {isExpanded && details && variant && (
                       <div className="mt-4 pt-4 border-t border-gray-800 space-y-4 animate-slide-down">
                         {/* Ingredients */}
-                        {details.ingredients.length > 0 && (
+                        {variant.ingredients_json && (variant.ingredients_json as IngredientJSON[]).length > 0 && (
                           <div>
                             <h4 className="text-sm font-semibold text-gray-300 mb-2 flex items-center gap-2">
                               🥗 Ingredients
                             </h4>
                             <ul className="space-y-1.5">
-                              {details.ingredients.map((ing) => (
-                                <li key={ing.id} className="text-sm text-gray-400 flex items-start">
+                              {(variant.ingredients_json as IngredientJSON[]).map((ing, idx) => (
+                                <li key={idx} className="text-sm text-gray-400 flex items-start">
                                   <span className="mr-2">•</span>
                                   <span>
                                     {ing.qty && `${ing.qty} `}
                                     {ing.unit && `${ing.unit} `}
-                                    {ing.item}
+                                    {ing.name}
                                   </span>
                                 </li>
                               ))}
@@ -532,18 +542,18 @@ export default function MealsPage() {
                         )}
 
                         {/* Instructions */}
-                        {details.instructions.length > 0 && (
+                        {variant.steps_json && (variant.steps_json as StepJSON[]).length > 0 && (
                           <div>
                             <h4 className="text-sm font-semibold text-gray-300 mb-2 flex items-center gap-2">
                               📝 Instructions
                             </h4>
                             <ol className="space-y-2">
-                              {details.instructions.map((inst) => (
-                                <li key={inst.id} className="text-sm text-gray-400 flex">
+                              {(variant.steps_json as StepJSON[]).map((step, idx) => (
+                                <li key={idx} className="text-sm text-gray-400 flex">
                                   <span className="font-medium text-orange-400 mr-2">
-                                    {inst.step_number}.
+                                    {step.step_no}.
                                   </span>
-                                  <span>{inst.text}</span>
+                                  <span>{step.body}</span>
                                 </li>
                               ))}
                             </ol>

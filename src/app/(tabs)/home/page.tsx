@@ -261,8 +261,11 @@ export default function HomePage() {
                 )}
               </Card>
 
-              {/* Card 3: Grocery Readiness */}
-              <Card className="hover:border-green-600/50 dark:hover:border-emerald-800/50 transition-colors">
+              {/* ============================================================================ */}
+              {/* GROCERY READINESS CARD - Disabled while grocery feature is in development */}
+              {/* To re-enable: Uncomment the entire Card below */}
+              {/* ============================================================================ */}
+              {/* <Card className="hover:border-green-600/50 dark:hover:border-emerald-800/50 transition-colors">
                 <div className="flex items-center gap-3 mb-4">
                   <span className="text-2xl">🛒</span>
                   <h2 className="text-xl font-semibold text-gray-900 dark:text-white">Grocery Readiness</h2>
@@ -295,7 +298,8 @@ export default function HomePage() {
                     </div>
                   </div>
                 </div>
-              </Card>
+              </Card> */}
+              {/* ============================================================================ */}
 
               {/* Primary CTA */}
               <div className="pt-4">

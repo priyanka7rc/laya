@@ -1,301 +1,307 @@
-# WhatsApp Integration Testing Guide
+# Quick Testing Guide - Day 1 Morning Features
 
-## Prerequisites Checklist
+## Prerequisites
+1. ✅ Migrations run (`20250116000000_relish_mvp.sql` + `20250116100000_meal_plates.sql`)
+2. ✅ Seed data loaded (`relish_seed.sql`)
+3. ✅ Environment variables set (see `RELISH_SETUP.md`)
+4. ✅ Dev server running: `npm run dev`
 
-Before testing, ensure you have:
+## Test Flow (5 Minutes)
 
-- [x] Database migration run in Supabase
-- [x] Environment variables added to `.env.local`
-- [ ] WhatsApp Business Account set up
-- [ ] Next.js dev server running
-- [ ] ngrok installed (for local testing)
+### 1. Meal Plan Generation (2 min)
+**URL**: `http://localhost:3000/mealplan`
 
-## Step-by-Step Testing
+**What to Test**:
+- [ ] Page loads with loading skeleton
+- [ ] Empty week auto-generates meals (if first time)
+- [ ] Click "✨ Suggest Meals" button
+- [ ] See multiple dishes per meal slot (carb, protein, veg, etc.)
+- [ ] Each dish has an emoji icon for component type
 
-### 1. Run Database Migration
-
-```bash
-# Go to Supabase SQL Editor
-# Copy contents of supabase-whatsapp-migration.sql
-# Run the query
-
-# Verify tables were created:
-SELECT table_name FROM information_schema.tables 
-WHERE table_schema = 'public' 
-AND table_name IN ('user_phone_numbers', 'groceries', 'moods');
+**Expected Behavior**:
+```
+Monday Lunch:
+  🌾 Jeera rice
+  🍗 Chicken curry
+  🥬 Palak paneer
+  🥗 Cucumber salad
 ```
 
-### 2. Add Environment Variables
+**What to Check**:
+- Console log: "Compiling X dishes..." (first time only)
+- Console log: "Created Y meals with Z components"
+- Console log: Token usage and latency
 
-Add to `/Users/priyankavijayakumar/laya/.env.local`:
+---
 
-```bash
-# Generate a verify token:
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+### 2. Dish Details Page (1 min)
+**Action**: Click any dish name in the meal plan
 
-# Add to .env.local:
-WHATSAPP_VERIFY_TOKEN=<generated-token>
+**What to Test**:
+- [ ] Page loads with loading skeleton
+- [ ] Dish name appears in header
+- [ ] Description is shown
+- [ ] Ingredients list is visible (with quantities)
+- [ ] "Cooking Steps" section is collapsible
+- [ ] Source shows "🤖 AI-generated"
+- [ ] Back button works
 
-# For now, leave these blank (will add during Meta setup):
-WHATSAPP_ACCESS_TOKEN=
-WHATSAPP_PHONE_NUMBER_ID=
-WHATSAPP_BUSINESS_ACCOUNT_ID=
+**Expected Behavior**:
+```
+Jeera Rice
+North Indian
+
+A fragrant rice dish tempered with cumin seeds...
+
+🥘 Ingredients
+• basmati rice (1 cup)
+• cumin seeds (1 teaspoon)
+• ghee (1 tablespoon)
+...
+
+📝 Cooking Steps ▶
+(click to expand)
 ```
 
-### 3. Start Dev Server
+---
 
-```bash
-cd /Users/priyankavijayakumar/laya
-npm run dev
+### 3. Grocery List (1 min)
+**URL**: `http://localhost:3000/grocery`
 
-# Server should start on http://localhost:3000
-# You should see: "Ready" message
+**What to Test**:
+- [ ] Page loads with loading skeleton
+- [ ] All ingredients from meal plan are listed
+- [ ] No quantities shown (per user feedback)
+- [ ] Checkboxes work (strike-through on check)
+- [ ] Items persist checked state
+
+**Expected Behavior**:
+```
+Grocery List
+Week of January 20
+
+☐ basmati rice
+☐ cumin seeds
+☐ chicken
+☐ spinach
+☐ paneer
+...
 ```
 
-### 4. Set Up ngrok
+---
 
-```bash
-# Install ngrok (if not already installed)
-npm install -g ngrok
+### 4. Rate Limiting (1 min)
+**Action**: Click "✨ Suggest Meals" button 11 times rapidly
 
-# Or download from: https://ngrok.com/download
+**Expected Behavior**:
+- First 10 times: Works normally
+- 11th time: Alert popup:
+  ```
+  ⚠️ Rate limit exceeded. Try again in X minutes.
+  
+  This helps keep costs under control. Please try again later!
+  ```
 
-# Start ngrok in a new terminal
-ngrok http 3000
+**Verification**:
+- Check browser console for rate limit status
+- Should see 429 status code on 11th request
 
-# You'll see output like:
-# Forwarding: https://abc123.ngrok.io -> http://localhost:3000
+---
 
-# Copy the https URL (e.g., https://abc123.ngrok.io)
+### 5. Ingredient Normalization (Supabase Check)
+
+**Action**: Open Supabase dashboard
+
+**Tables to Check**:
+
+#### `recipe_variants` table
+```sql
+SELECT 
+  id,
+  (SELECT canonical_name FROM dishes WHERE id = dish_id) as dish,
+  ingredients_json
+FROM recipe_variants
+LIMIT 5;
 ```
 
-### 5. Test Webhook Locally (Without WhatsApp)
+**What to Verify**:
+- [ ] `ingredients_json` has structured data
+- [ ] Ingredient names are canonical (e.g., "turmeric powder" not "haldi")
+- [ ] Each ingredient has `name`, `qty`, `unit`, `ingredient_id`
 
-```bash
-# Test GET verification
-curl "http://localhost:3000/api/whatsapp-webhook?hub.mode=subscribe&hub.verify_token=YOUR_VERIFY_TOKEN&hub.challenge=test123"
-
-# Should return: test123
-
-# Test POST (simulated WhatsApp message)
-curl -X POST http://localhost:3000/api/whatsapp-webhook \
-  -H "Content-Type: application/json" \
-  -d '{
-    "entry": [{
-      "changes": [{
-        "field": "messages",
-        "value": {
-          "messages": [{
-            "from": "1234567890",
-            "id": "test-msg-1",
-            "timestamp": "1234567890",
-            "type": "text",
-            "text": {
-              "body": "Remind me to buy milk tomorrow"
-            }
-          }]
-        }
-      }]
-    }]
-  }'
-
-# Check terminal logs - you should see:
-# - "📨 Processing message from 1234567890"
-# - "🧠 Processing with Laya..."
-# - "✅ Message processed successfully"
-# - "📤 [STUB] Would send WhatsApp message:" (since credentials aren't set yet)
+#### `ai_usage_logs` table
+```sql
+SELECT 
+  feature,
+  model,
+  tokens_in + tokens_out as total_tokens,
+  latency_ms,
+  created_at
+FROM ai_usage_logs
+ORDER BY created_at DESC
+LIMIT 10;
 ```
 
-### 6. Check Database
+**What to Verify**:
+- [ ] Rows exist for `plan_generation` and `dish_compilation`
+- [ ] Token counts are reasonable (500-1500 per call)
+- [ ] Latency is logged (1000-5000ms typical)
+
+#### `grocery_list_items` table
+```sql
+SELECT 
+  display_name,
+  ingredient_id,
+  (SELECT canonical_name FROM ingredient_master WHERE id = ingredient_id) as matched_name
+FROM grocery_list_items
+LIMIT 10;
+```
+
+**What to Verify**:
+- [ ] Most items have `ingredient_id` (matched)
+- [ ] Unmatched items show `null` for `ingredient_id`
+- [ ] Display names are readable
+
+---
+
+## Advanced Testing
+
+### Test Dish Compilation Caching
+**Scenario**: Verify that compiled dishes are reused
+
+**Steps**:
+1. Delete all `meal_plan_items` for current week
+2. Click "✨ Suggest Meals"
+3. Note console log: "Compiling X dishes..."
+4. Delete all `meal_plan_items` again
+5. Click "✨ Suggest Meals" again
+6. Note console log: Should NOT say "Compiling..." (cache hit)
+
+**Expected**:
+- First generation: Compiles dishes (~5-15 seconds)
+- Second generation: Instant (~1-2 seconds)
+
+---
+
+### Test Token Limit
+**Scenario**: Verify monthly token limit enforcement
+
+**Steps**:
+1. Edit `.env.local`: `TOKEN_LIMIT_PER_USER=1000`
+2. Restart dev server
+3. Generate meal plan 3-4 times
+4. Should hit limit and see error:
+   ```
+   ⚠️ Monthly token limit (1,000) exceeded. 
+   Used: 1,234. Resets next month.
+   ```
+
+**Cleanup**: Set `TOKEN_LIMIT_PER_USER=100000` and restart
+
+---
+
+### Test Empty States
+**Scenario**: Verify UI handles no data gracefully
+
+**Steps**:
+1. Go to `/grocery` before generating meal plan
+2. Should see:
+   ```
+   🛒
+   No groceries yet!
+   Plan meals for this week to generate a grocery list
+   ```
+
+---
+
+## Common Issues & Fixes
+
+### Issue: "No meal plate found or created"
+**Cause**: RLS policy or old data
+**Fix**: Delete old `meal_plan_items` in Supabase
+
+### Issue: "Recipe variants not found"
+**Cause**: Dishes not compiled yet
+**Fix**: Normal - they compile on first generation
+
+### Issue: Rate limit not working
+**Cause**: Server restart clears in-memory cache
+**Fix**: Expected behavior for MVP
+
+### Issue: Ingredients show as "haldi" not "turmeric powder"
+**Cause**: Seed data not loaded
+**Fix**: Run `relish_seed.sql` again
+
+### Issue: OpenAI errors (quota exceeded)
+**Cause**: No API key or quota exceeded
+**Fix**: Check `.env.local` has valid `OPENAI_API_KEY`
+
+---
+
+## Success Criteria ✅
+
+After testing, you should see:
+
+- ✅ Weekly meal plan generated with multiple dishes per meal
+- ✅ Clickable dish names leading to details page
+- ✅ Grocery list aggregated from all meals
+- ✅ Rate limiting working after 10 calls
+- ✅ Ingredients normalized in database
+- ✅ AI usage logged in database
+- ✅ Loading skeletons and empty states working
+- ✅ No console errors (except intentional rate limit test)
+
+---
+
+## Quick Verification Queries
+
+Run these in Supabase SQL Editor:
 
 ```sql
--- Check if user was created
-SELECT * FROM user_phone_numbers;
+-- 1. Check compiled dishes
+SELECT COUNT(*) as compiled_dishes FROM recipe_variants;
+-- Should be: 10-25 after first generation
 
--- Check if message was saved
-SELECT * FROM messages WHERE channel = 'whatsapp';
+-- 2. Check AI usage
+SELECT 
+  COUNT(*) as total_calls,
+  SUM(tokens_in + tokens_out) as total_tokens
+FROM ai_usage_logs;
+-- Should see: tokens increase with each generation
 
--- Check if task was extracted
-SELECT * FROM tasks ORDER BY created_at DESC LIMIT 5;
+-- 3. Check meal plan
+SELECT 
+  COUNT(*) as meal_slots,
+  COUNT(DISTINCT day_of_week) as days_filled
+FROM meal_plan_items
+WHERE meal_plan_id = (
+  SELECT id FROM meal_plans 
+  ORDER BY created_at DESC 
+  LIMIT 1
+);
+-- Should see: ~15-21 meal slots across 7 days
+
+-- 4. Check grocery items
+SELECT COUNT(*) as grocery_items
+FROM grocery_list_items
+WHERE grocery_list_id = (
+  SELECT id FROM grocery_lists
+  ORDER BY created_at DESC
+  LIMIT 1
+);
+-- Should see: 30-80 ingredients
 ```
 
-### 7. View Dashboard
+---
 
-Navigate to: http://localhost:3000/whatsapp-dashboard
+## Next: Day 1 Afternoon (Optional)
 
-You should see:
-- 1 user listed (phone number 1234567890)
-- Click on the user to see conversation details
-- Tasks section should show the extracted task
+If you have time and want to continue:
+1. Run `npx ts-node scripts/test-grocery-aggregation.ts`
+2. Add more polish (toasts instead of alerts)
+3. Create admin dashboard at `/admin/ai-usage`
+4. Add unit tests for normalizer
 
-### 8. Set Up WhatsApp Business API
+Otherwise, Day 1 Morning is **COMPLETE**! 🎉
 
-1. Go to https://business.facebook.com
-2. Navigate to your Meta Business Account (or create one)
-3. In left sidebar, click "WhatsApp" → "Getting Started"
-4. Follow the wizard to:
-   - Create a WhatsApp Business App
-   - Add a phone number
-   - Get API credentials
-
-5. Get your credentials:
-   - **Access Token**: WhatsApp → API Setup → Temporary access token
-   - **Phone Number ID**: WhatsApp → API Setup → Phone number ID
-   - **Business Account ID**: Settings → Business settings → WhatsApp Business Accounts
-
-6. Add to `.env.local`:
-```bash
-WHATSAPP_ACCESS_TOKEN=your-access-token-here
-WHATSAPP_PHONE_NUMBER_ID=your-phone-number-id-here
-WHATSAPP_BUSINESS_ACCOUNT_ID=your-business-account-id-here
-```
-
-7. Restart Next.js server:
-```bash
-# Stop server (Ctrl+C)
-npm run dev
-```
-
-### 9. Configure Webhook in Meta
-
-1. In Meta Business Manager:
-   - Go to WhatsApp → Configuration
-   - Click "Edit" next to Webhook
-   - Callback URL: `https://your-ngrok-url.ngrok.io/api/whatsapp-webhook`
-   - Verify Token: (paste your WHATSAPP_VERIFY_TOKEN)
-   - Click "Verify and Save"
-
-2. Subscribe to webhook fields:
-   - Check "messages"
-   - Click "Subscribe"
-
-### 10. Send Real WhatsApp Message
-
-1. From your phone, send a WhatsApp message to your test number
-2. Example: "Remind me to buy groceries tomorrow at 5pm"
-
-3. Check terminal logs:
-   - Should see message processing
-   - Should see Laya's response
-   - Should see "✅ Message sent" (not [STUB])
-
-4. Check your phone - you should receive Laya's response!
-
-5. Check dashboard: http://localhost:3000/whatsapp-dashboard
-   - Your phone number should appear
-   - Click to see conversation, tasks, etc.
-
-### 11. Test Audio Message
-
-1. From your phone, send a voice note to the WhatsApp Business number
-2. Say: "Buy eggs and milk this evening"
-
-3. Check terminal:
-   - "🎤 Transcribing audio message..."
-   - "📝 Transcription: ..."
-   - "🧠 Processing with Laya..."
-   - "✅ Message processed successfully"
-
-4. You should receive a text reply with the task confirmation
-
-### 12. Test Multiple Message Types
-
-Test these scenarios:
-
-- **Simple task**: "Call mom at 3pm"
-- **Grocery list**: "Get eggs, milk, and bread"
-- **Emotional message**: "I'm feeling overwhelmed today"
-- **Question**: "What's on my to-do list?"
-- **Multiple tasks**: "Remind me to pay bills and book doctor appointment"
-
-## Troubleshooting
-
-### Webhook Not Receiving Messages
-
-```bash
-# Check ngrok is running
-ngrok http 3000
-
-# Check webhook is configured in Meta
-# Go to WhatsApp → Configuration → Webhook
-
-# Check dev server logs
-# Should see "📥 WhatsApp Webhook:" when message arrives
-```
-
-### "No authenticated user" Error
-
-```bash
-# Check database function exists
-SELECT routine_name FROM information_schema.routines 
-WHERE routine_name = 'get_or_create_user_by_phone';
-
-# If not, re-run the migration
-```
-
-### Audio Transcription Failing
-
-```bash
-# Check OpenAI API key is set
-echo $OPENAI_API_KEY
-
-# Check Whisper model access
-# Whisper is included in standard OpenAI API
-
-# Check audio file download
-# Terminal should show: "🎤 Transcribing audio message..."
-```
-
-### Laya Not Responding Appropriately
-
-The Laya system prompt is in `src/lib/laya-brain.ts`. You can:
-- Adjust the tone/style
-- Add more examples
-- Modify task extraction rules
-- Change response length
-
-### Rate Limiting / Token Quota
-
-```sql
--- Check token usage
-SELECT * FROM user_token_usage;
-
--- Check usage logs
-SELECT * FROM gpt_usage_logs ORDER BY created_at DESC LIMIT 10;
-
--- Increase limit (in .env.local)
-TOKEN_LIMIT_PER_USER=200000
-```
-
-## Next Steps: Production Deployment
-
-Once local testing works:
-
-1. Deploy to Vercel (see WHATSAPP_SETUP.md)
-2. Update webhook URL in Meta to Vercel production URL
-3. Get permanent WhatsApp access token
-4. Set up monitoring (PostHog, Sentry, etc.)
-5. Test with multiple users
-6. Monitor costs (OpenAI usage dashboard)
-
-## Success Criteria
-
-✅ Webhook verification works
-✅ Text messages processed correctly
-✅ Audio messages transcribed and processed
-✅ Tasks/groceries extracted accurately
-✅ Laya responds with appropriate tone
-✅ Database stores all data correctly
-✅ Dashboard shows user data
-✅ WhatsApp delivers responses successfully
-
-## Cost Estimation
-
-For 100 messages/day:
-- GPT-4o-mini: ~$0.50-1.00/day
-- Whisper (audio): ~$0.30/minute
-- Total: ~$20-30/month for active testing
-
-For production (1000 users, 10 messages/day):
-- ~$150-300/month depending on audio usage
-
+Proceed to Day 2 (Mobile) when ready.

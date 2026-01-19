@@ -181,8 +181,9 @@ export default function FloatingBrainDump() {
       {/* Floating Button */}
       <button
         onClick={() => setIsOpen(true)}
-        className="fixed bottom-24 right-4 md:bottom-6 md:right-6 z-40 w-14 h-14 bg-gradient-to-br from-purple-500 to-blue-600 text-white rounded-full shadow-lg hover:shadow-xl hover:scale-110 transition-all duration-200 flex items-center justify-center"
+        className="fixed bottom-36 right-4 md:bottom-6 md:right-6 z-50 w-16 h-16 bg-gradient-to-br from-purple-500 to-blue-600 text-white rounded-full shadow-lg hover:shadow-xl hover:scale-110 transition-all duration-200 flex items-center justify-center group"
         aria-label="Open Brain Dump"
+        title="Brain Dump 💡"
       >
         <svg
           xmlns="http://www.w3.org/2000/svg"
