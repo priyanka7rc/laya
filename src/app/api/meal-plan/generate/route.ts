@@ -98,6 +98,7 @@ function shuffle<T>(array: T[]): T[] {
  * OPTIMIZED: Single query with joins
  */
 async function getRecentlyUsedDishes(userId: string): Promise<string[]> {
+  console.time('⏱️  Query: Get recently used dishes');
   const twoWeeksAgo = new Date();
   twoWeeksAgo.setDate(twoWeeksAgo.getDate() - 14);
   
@@ -116,8 +117,11 @@ async function getRecentlyUsedDishes(userId: string): Promise<string[]> {
     .eq('user_id', userId)
     .gte('week_start_date', twoWeeksAgo.toISOString().split('T')[0]);
   
+  console.timeEnd('⏱️  Query: Get recently used dishes');
+  
   if (error || !data) return [];
   
+  console.time('⏱️  Process: Extract dish IDs');
   const dishIds = new Set<string>();
   data.forEach((plan: any) => {
     plan.meal_plan_items?.forEach((item: any) => {
@@ -126,6 +130,7 @@ async function getRecentlyUsedDishes(userId: string): Promise<string[]> {
       });
     });
   });
+  console.timeEnd('⏱️  Process: Extract dish IDs');
   
   return Array.from(dishIds);
 }
@@ -143,34 +148,44 @@ async function distributeDishesToSlots(
   filledSlots: Map<string, Array<{ dish_name: string; component_type: string; is_optional: boolean }>>;
   emptySlots: Array<{ day: number; slot: string }>;
 }> {
-  console.time(`[${timestamp}] distributeDishesToSlots`);
+  console.log(`\n${'='.repeat(80)}`);
+  console.log(`[${timestamp}] 🚀 STARTING HYBRID RECIPE SELECTION`);
+  console.log(`${'='.repeat(80)}\n`);
+  console.time(`[${timestamp}] ⏱️  TOTAL: distributeDishesToSlots`);
   
   // Step 1: Get recently used dish IDs (1 query)
+  console.log(`[${timestamp}] 📋 Step 1: Fetching recently used dishes...`);
   const recentDishIds = await getRecentlyUsedDishes(userId);
-  console.log(`[${timestamp}] 📊 Found ${recentDishIds.length} dishes used in last 2 weeks`);
+  console.log(`[${timestamp}] ✅ Found ${recentDishIds.length} dishes used in last 2 weeks\n`);
   
   // Step 2: Get ALL dishes with complete recipes in ONE query
+  console.log(`[${timestamp}] 📋 Step 2: Fetching all available dishes...`);
+  console.time(`[${timestamp}] ⏱️  Query: Get all dishes`);
   const { data: allDishes } = await supabase
     .from('dishes')
     .select('id, canonical_name, usage_count, meal_type')
     .eq('has_ingredients', true)
     .order('usage_count', { ascending: false });
+  console.timeEnd(`[${timestamp}] ⏱️  Query: Get all dishes`);
   
   if (!allDishes || allDishes.length === 0) {
-    console.log(`[${timestamp}] ⚠️ No dishes in database, will use AI for all slots`);
+    console.log(`[${timestamp}] ⚠️  No dishes in database, will use AI for all slots`);
     const emptySlots = [];
     for (let day = 0; day < 7; day++) {
       for (const slot of ['breakfast', 'morning_snack', 'lunch', 'evening_snack', 'dinner']) {
         emptySlots.push({ day, slot });
       }
     }
-    console.timeEnd(`[${timestamp}] distributeDishesToSlots`);
+    console.timeEnd(`[${timestamp}] ⏱️  TOTAL: distributeDishesToSlots`);
     return { filledSlots: new Map(), emptySlots };
   }
   
-  console.log(`[${timestamp}] 📚 Loaded ${allDishes.length} dishes from database`);
+  console.log(`[${timestamp}] ✅ Loaded ${allDishes.length} dishes from database\n`);
   
   // Step 3: Filter in memory for each slot (no more DB queries!)
+  console.log(`[${timestamp}] 📋 Step 3: Distributing dishes to 35 slots (in-memory)...`);
+  console.time(`[${timestamp}] ⏱️  Process: In-memory filtering & selection`);
+  
   const filledSlots = new Map();
   const emptySlots = [];
   
@@ -222,8 +237,9 @@ async function distributeDishesToSlots(
     }
   }
   
-  console.log(`[${timestamp}] 📊 Database filled ${filledSlots.size}/35 slots, ${emptySlots.length} need AI`);
-  console.timeEnd(`[${timestamp}] distributeDishesToSlots`);
+  console.timeEnd(`[${timestamp}] ⏱️  Process: In-memory filtering & selection`);
+  console.log(`[${timestamp}] ✅ Database filled ${filledSlots.size}/35 slots, ${emptySlots.length} need AI\n`);
+  console.timeEnd(`[${timestamp}] ⏱️  TOTAL: distributeDishesToSlots`);
   
   return { filledSlots, emptySlots };
 }
@@ -260,6 +276,8 @@ export async function POST(request: NextRequest) {
     // HYBRID STRATEGY: Database-first (with 25% overlap), then AI for gaps
     // ============================================================================
     
+    console.time(`[${timestamp}] ⏱️  TOTAL: Hybrid recipe selection`);
+    
     // Step 1: Try to fill slots from database (prioritize existing recipes)
     const { filledSlots, emptySlots } = await distributeDishesToSlots(userId, weekStartDate, timestamp);
     
@@ -268,13 +286,18 @@ export async function POST(request: NextRequest) {
     // Step 2: Only call AI if there are empty slots
     if (emptySlots.length > 0) {
       console.log(`[${timestamp}] 🤖 Calling AI to generate ${emptySlots.length} slots...`);
+      console.time(`[${timestamp}] ⏱️  AI: generateWeeklyMealPlan`);
       generatedPlan = await generateWeeklyMealPlan(userId, excludeDishes);
-      console.log(`[${timestamp}] 📊 OpenAI returned ${generatedPlan.meals.length} meals`);
+      console.timeEnd(`[${timestamp}] ⏱️  AI: generateWeeklyMealPlan`);
+      console.log(`[${timestamp}] ✅ OpenAI returned ${generatedPlan.meals.length} meals\n`);
     } else {
-      console.log(`[${timestamp}] ✅ All slots filled from database! No AI needed.`);
+      console.log(`[${timestamp}] ✅ All slots filled from database! No AI needed.\n`);
     }
     
     // Step 3: Merge database-filled slots with AI-generated slots
+    console.log(`[${timestamp}] 📋 Step 4: Merging database dishes with AI dishes...`);
+    console.time(`[${timestamp}] ⏱️  Process: Merge DB & AI meals`);
+    
     const allMeals = [];
     
     for (let day = 0; day < 7; day++) {
@@ -298,7 +321,9 @@ export async function POST(request: NextRequest) {
       }
     }
     
-    console.log(`[${timestamp}] 📊 Final meal plan: ${allMeals.length} meals (${filledSlots.size} from DB, ${emptySlots.length} from AI)`);
+    console.timeEnd(`[${timestamp}] ⏱️  Process: Merge DB & AI meals`);
+    console.log(`[${timestamp}] ✅ Final meal plan: ${allMeals.length} meals (${filledSlots.size} from DB, ${emptySlots.length} from AI)\n`);
+    console.timeEnd(`[${timestamp}] ⏱️  TOTAL: Hybrid recipe selection`);
     
     // Use the merged meal plan instead of just AI-generated
     generatedPlan.meals = allMeals;
@@ -361,8 +386,12 @@ export async function POST(request: NextRequest) {
         .map((item: any) => `${item.day_of_week}-${item.meal_slot}`) || []
     );
 
+    console.log(`\n${'='.repeat(80)}`);
+    console.log(`[${timestamp}] 💾 SAVING TO DATABASE`);
+    console.log(`${'='.repeat(80)}\n`);
     console.log(`[${timestamp}] 📝 Creating meal plan items for empty slots only...`);
     console.log(`[${timestamp}] Found ${filledSlots.size} filled slots to preserve (with components)`);
+    console.time(`[${timestamp}] ⏱️  TOTAL: Database insertions`);
 
     let mealsCreated = 0;
     let componentsCreated = 0;
@@ -473,15 +502,15 @@ export async function POST(request: NextRequest) {
         }
 
         try {
-          components.push({
-            meal_plate_id: plateId,
+        components.push({
+          meal_plate_id: plateId,
             component_type: validatedType, // Use validated type
-            dish_name: comp.dish_name,
-            dish_id: matchedDishId || null,
-            sort_order: idx,
-            is_optional: comp.is_optional || false,
-            servings: 4, // Default serving size for household
-          });
+          dish_name: comp.dish_name,
+          dish_id: matchedDishId || null,
+          sort_order: idx,
+          is_optional: comp.is_optional || false,
+          servings: 4, // Default serving size for household
+        });
         } catch (typeError) {
           console.error(`[${timestamp}] ❌ Failed to add component "${comp.dish_name}" with type "${comp.component_type}":`, typeError);
           // Skip this component and continue
@@ -491,11 +520,11 @@ export async function POST(request: NextRequest) {
 
       // Insert components with better error handling
       try {
-        const { error: componentsError } = await supabase
-          .from('meal_plate_components')
-          .insert(components);
+      const { error: componentsError } = await supabase
+        .from('meal_plate_components')
+        .insert(components);
 
-        if (componentsError) {
+      if (componentsError) {
           // Check if it's an enum error
           if (componentsError.message?.includes('invalid input value for enum')) {
             console.error(`[${timestamp}] ❌ ENUM ERROR:`, componentsError.message);
@@ -507,16 +536,16 @@ export async function POST(request: NextRequest) {
           } else {
             console.error(`[${timestamp}] Error creating components:`, componentsError);
           }
-        } else {
-          componentsCreated += components.length;
-          
-          // Update usage tracking for used dishes
-          const dishIds = components.filter(c => c.dish_id).map(c => c.dish_id);
-          if (dishIds.length > 0) {
-            for (const dishId of dishIds) {
-              await supabase.rpc('increment_dish_usage', { dish_id: dishId });
-            }
+      } else {
+        componentsCreated += components.length;
+        
+        // Update usage tracking for used dishes
+        const dishIds = components.filter(c => c.dish_id).map(c => c.dish_id);
+        if (dishIds.length > 0) {
+          for (const dishId of dishIds) {
+            await supabase.rpc('increment_dish_usage', { dish_id: dishId });
           }
+        }
         }
       } catch (insertError) {
         console.error(`[${timestamp}] ❌ Failed to insert components for ${meal.slot} on day ${meal.day}:`, insertError);
@@ -524,7 +553,8 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    console.log(`[${timestamp}] ✅ Created ${mealsCreated} meals with ${componentsCreated} components`);
+    console.timeEnd(`[${timestamp}] ⏱️  TOTAL: Database insertions`);
+    console.log(`[${timestamp}] ✅ Created ${mealsCreated} meals with ${componentsCreated} components\n`);
 
     // 6. Compile any dishes that don't have recipe_variants yet
     console.log(`[${timestamp}] 🔄 Checking for dishes needing compilation...`);
@@ -571,6 +601,17 @@ export async function POST(request: NextRequest) {
 
     // 7. Regenerate grocery list
     // (This will be triggered automatically by the frontend after generation)
+
+    console.log(`\n${'='.repeat(80)}`);
+    console.log(`[${timestamp}] ✅ MEAL PLAN GENERATION COMPLETE`);
+    console.log(`${'='.repeat(80)}`);
+    console.log(`[${timestamp}] 📊 Summary:`);
+    console.log(`[${timestamp}]    • Meals created: ${mealsCreated}`);
+    console.log(`[${timestamp}]    • Components created: ${componentsCreated}`);
+    console.log(`[${timestamp}]    • Dishes compiled: ${dishesCompiled}`);
+    console.log(`[${timestamp}]    • From database: ${filledSlots.size} slots`);
+    console.log(`[${timestamp}]    • From AI: ${emptySlots.length} slots`);
+    console.log(`${'='.repeat(80)}\n`);
 
     return NextResponse.json({
       success: true,

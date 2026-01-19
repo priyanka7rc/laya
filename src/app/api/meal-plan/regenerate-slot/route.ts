@@ -138,6 +138,8 @@ async function tryGetDishesFromDatabase(
   recentDishIds: string[],
   timestamp: string
 ): Promise<Array<{ id: string; canonical_name: string }> | null> {
+  console.time(`[${timestamp}] ⏱️  TOTAL: tryGetDishesFromDatabase`);
+  
   // Calculate how many dishes this slot needs
   let dishCount = 1;
   if (slot === 'breakfast') dishCount = 2;
@@ -146,24 +148,32 @@ async function tryGetDishesFromDatabase(
   console.log(`[${timestamp}] 🔍 Looking for ${dishCount} dishes for ${slot}`);
   
   // Get ALL suitable dishes in ONE query
+  console.time(`[${timestamp}] ⏱️  Query: Get all dishes`);
   const { data: allDishes } = await supabase
     .from('dishes')
     .select('id, canonical_name, usage_count, meal_type')
     .eq('has_ingredients', true)
     .order('usage_count', { ascending: false });
+  console.timeEnd(`[${timestamp}] ⏱️  Query: Get all dishes`);
   
   if (!allDishes || allDishes.length === 0) {
     console.log(`[${timestamp}] 🤖 No dishes in database, will use AI`);
+    console.timeEnd(`[${timestamp}] ⏱️  TOTAL: tryGetDishesFromDatabase`);
     return null;
   }
   
+  console.log(`[${timestamp}] 📚 Loaded ${allDishes.length} dishes`);
+  
   // Filter for this meal type (in memory, fast!)
+  console.time(`[${timestamp}] ⏱️  Process: Filter & select in-memory`);
   const suitableDishes = allDishes.filter(d => 
     d.meal_type && Array.isArray(d.meal_type) && d.meal_type.includes(slot.toLowerCase())
   );
   
   if (suitableDishes.length === 0) {
+    console.timeEnd(`[${timestamp}] ⏱️  Process: Filter & select in-memory`);
     console.log(`[${timestamp}] 🤖 No dishes for ${slot} in database, will use AI`);
+    console.timeEnd(`[${timestamp}] ⏱️  TOTAL: tryGetDishesFromDatabase`);
     return null;
   }
   
@@ -180,13 +190,17 @@ async function tryGetDishesFromDatabase(
   const selectedRecent = shuffle(recentDishesForSlot).slice(0, allowedRecentCount);
   const selected = [...selectedNew, ...selectedRecent];
   
+  console.timeEnd(`[${timestamp}] ⏱️  Process: Filter & select in-memory`);
+  
   // Only return if we have enough dishes
   if (selected.length >= dishCount) {
     console.log(`[${timestamp}] ✅ Found ${selected.length} dishes from database for ${slot} (${selectedNew.length} new + ${selectedRecent.length} recent)`);
+    console.timeEnd(`[${timestamp}] ⏱️  TOTAL: tryGetDishesFromDatabase`);
     return selected.slice(0, dishCount);
   }
   
   console.log(`[${timestamp}] 🤖 Only found ${selected.length}/${dishCount} dishes, will use AI`);
+  console.timeEnd(`[${timestamp}] ⏱️  TOTAL: tryGetDishesFromDatabase`);
   return null;
 }
 
@@ -199,18 +213,26 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
-    console.log(`[${timestamp}] 🔄 Regenerating slot: Day ${dayOfWeek}, ${slot}, excluding:`, excludeDishes);
+    console.log(`\n${'='.repeat(80)}`);
+    console.log(`[${timestamp}] 🔄 REGENERATING SINGLE SLOT`);
+    console.log(`${'='.repeat(80)}`);
+    console.log(`[${timestamp}] Target: Day ${dayOfWeek}, ${slot}`);
+    console.log(`[${timestamp}] Excluding: ${excludeDishes.length > 0 ? excludeDishes.join(', ') : 'none'}\n`);
+    console.time(`[${timestamp}] ⏱️  TOTAL: Single slot regeneration`);
 
     // ============================================================================
     // HYBRID STRATEGY: Try database first, fallback to AI
     // ============================================================================
     
     // Step 1: Get recently used dishes
+    console.log(`[${timestamp}] 📋 Step 1: Fetching recently used dishes...`);
     const recentDishIds = await getRecentlyUsedDishes(userId);
-    console.log(`[${timestamp}] 📊 Found ${recentDishIds.length} dishes used in last 2 weeks`);
+    console.log(`[${timestamp}] ✅ Found ${recentDishIds.length} dishes used in last 2 weeks\n`);
     
     // Step 2: Try to get dishes from database
+    console.log(`[${timestamp}] 📋 Step 2: Trying to get dishes from database...`);
     const dbDishes = await tryGetDishesFromDatabase(slot, recentDishIds, timestamp);
+    console.log('');
     
     let targetMeal: any;
     
@@ -238,9 +260,12 @@ export async function POST(request: NextRequest) {
       };
     } else {
       // Step 3: Fallback to AI
-      console.log(`[${timestamp}] 🤖 Calling AI to generate meal for ${slot}...`);
+      console.log(`[${timestamp}] 📋 Step 3: Calling AI to generate meal...`);
+      console.time(`[${timestamp}] ⏱️  AI: generateWeeklyMealPlan`);
       
       const generatedPlan = await generateWeeklyMealPlan(userId, excludeDishes);
+      
+      console.timeEnd(`[${timestamp}] ⏱️  AI: generateWeeklyMealPlan`);
 
       // Find the meal for this specific day/slot
       targetMeal = generatedPlan.meals.find(
@@ -251,10 +276,11 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'Failed to generate meal' }, { status: 500 });
       }
       
-      console.log(`[${timestamp}] ✅ AI generated ${targetMeal.components.length} components for ${slot}`);
+      console.log(`[${timestamp}] ✅ AI generated ${targetMeal.components.length} components for ${slot}\n`);
     }
 
-    console.log(`[${timestamp}] ✅ Selected ${targetMeal.components.length} components for ${slot}`);
+    console.log(`[${timestamp}] 📋 Step 4: Saving to database...`);
+    console.time(`[${timestamp}] ⏱️  Database: Insert components`);
 
     // Get all dishes from database for matching
     const { data: allDishes } = await supabase
@@ -408,7 +434,17 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    console.log(`[${timestamp}] ✅ Regenerated ${slot} on day ${dayOfWeek} with ${componentsToInsert.length} components`);
+    console.timeEnd(`[${timestamp}] ⏱️  Database: Insert components`);
+    console.timeEnd(`[${timestamp}] ⏱️  TOTAL: Single slot regeneration`);
+    
+    console.log(`\n${'='.repeat(80)}`);
+    console.log(`[${timestamp}] ✅ SLOT REGENERATION COMPLETE`);
+    console.log(`${'='.repeat(80)}`);
+    console.log(`[${timestamp}] 📊 Summary:`);
+    console.log(`[${timestamp}]    • Slot: Day ${dayOfWeek}, ${slot}`);
+    console.log(`[${timestamp}]    • Components added: ${componentsToInsert.length}`);
+    console.log(`[${timestamp}]    • Source: ${dbDishes ? 'Database' : 'AI'}`);
+    console.log(`${'='.repeat(80)}\n`);
 
     return NextResponse.json({
       success: true,
