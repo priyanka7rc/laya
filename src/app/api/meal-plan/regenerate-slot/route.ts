@@ -151,8 +151,7 @@ async function tryGetDishesFromDatabase(
   console.time(`[${timestamp}] ⏱️  Query: Get all dishes`);
   const { data: allDishes } = await supabase
     .from('dishes')
-    .select('id, canonical_name, usage_count, meal_type')
-    .eq('has_ingredients', true)
+    .select('id, canonical_name, usage_count, typical_meal_slots')
     .order('usage_count', { ascending: false });
   console.timeEnd(`[${timestamp}] ⏱️  Query: Get all dishes`);
   
@@ -167,7 +166,7 @@ async function tryGetDishesFromDatabase(
   // Filter for this meal type (in memory, fast!)
   console.time(`[${timestamp}] ⏱️  Process: Filter & select in-memory`);
   const suitableDishes = allDishes.filter(d => 
-    d.meal_type && Array.isArray(d.meal_type) && d.meal_type.includes(slot.toLowerCase())
+    d.typical_meal_slots && Array.isArray(d.typical_meal_slots) && d.typical_meal_slots.includes(slot.toLowerCase())
   );
   
   if (suitableDishes.length === 0) {
