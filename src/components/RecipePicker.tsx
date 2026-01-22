@@ -8,6 +8,7 @@ import { Dish } from '@/types/relish';
 interface DishWithVariant extends Dish {
   recipe_variant_id?: string;
   prep_time?: number;
+  has_recipe?: boolean;
 }
 
 interface RecipePickerProps {
@@ -20,6 +21,7 @@ interface IngredientInput {
   item: string;
   qty: string;
   unit: string;
+  source_type: 'unknown' | 'store_bought' | 'homemade';
 }
 
 export default function RecipePicker({ onSelect, onClose, onNewRecipe }: RecipePickerProps) {
@@ -34,11 +36,13 @@ export default function RecipePicker({ onSelect, onClose, onNewRecipe }: RecipeP
   const [formDuration, setFormDuration] = useState('');
   const [formServings, setFormServings] = useState('4');
   const [formIngredients, setFormIngredients] = useState<IngredientInput[]>([
-    { item: '', qty: '', unit: '' }
+    { item: '', qty: '', unit: '', source_type: 'unknown' }
   ]);
   const [formSteps, setFormSteps] = useState<string[]>(['']);
   const [saving, setSaving] = useState(false);
   const [ingredientOptions, setIngredientOptions] = useState<string[]>([]);
+  const [pendingDish, setPendingDish] = useState<DishWithVariant | null>(null);
+  const [showSourcePrompt, setShowSourcePrompt] = useState(false);
 
   useEffect(() => {
     fetchDishes();
@@ -55,7 +59,7 @@ export default function RecipePicker({ onSelect, onClose, onNewRecipe }: RecipeP
           canonical_name,
           cuisine_tags,
           aliases,
-          recipe_variants!inner (
+          recipe_variants (
             id,
             prep_time_min,
             cook_time_min
@@ -66,7 +70,12 @@ export default function RecipePicker({ onSelect, onClose, onNewRecipe }: RecipeP
       if (error) throw error;
       
       // Transform data to include recipe variant info
-      const transformedData = (data || []).map((dish: any) => ({
+      const transformedData = (data || []).map((dish: any) => {
+        const variant = Array.isArray(dish.recipe_variants) && dish.recipe_variants.length > 0
+          ? dish.recipe_variants[0]
+          : null;
+        
+        return ({
         id: dish.id,
         canonical_name: dish.canonical_name,
         cuisine_tags: dish.cuisine_tags || [],
@@ -74,9 +83,11 @@ export default function RecipePicker({ onSelect, onClose, onNewRecipe }: RecipeP
         ontology_tokens: [],
         typical_meal_slots: [],
         created_at: '',
-        recipe_variant_id: dish.recipe_variants?.[0]?.id,
-        prep_time: dish.recipe_variants?.[0]?.prep_time_min + (dish.recipe_variants?.[0]?.cook_time_min || 0),
-      }));
+          recipe_variant_id: variant?.id,
+          prep_time: variant ? (variant.prep_time_min + (variant.cook_time_min || 0)) : undefined,
+          has_recipe: !!variant
+        });
+      });
       
       setDishes(transformedData);
     } catch (err: any) {
@@ -109,7 +120,7 @@ export default function RecipePicker({ onSelect, onClose, onNewRecipe }: RecipeP
   };
 
   const addIngredient = () => {
-    setFormIngredients([...formIngredients, { item: '', qty: '', unit: '' }]);
+    setFormIngredients([...formIngredients, { item: '', qty: '', unit: '', source_type: 'unknown' }]);
   };
 
   const removeIngredient = (index: number) => {
@@ -194,6 +205,7 @@ export default function RecipePicker({ onSelect, onClose, onNewRecipe }: RecipeP
           name: ing.item.trim(),
           qty: ing.qty ? parseFloat(ing.qty) : 0,
           unit: ing.unit || '',
+          source_type: ing.source_type || 'unknown',
         }));
 
       // Prepare steps JSON
@@ -256,6 +268,16 @@ export default function RecipePicker({ onSelect, onClose, onNewRecipe }: RecipeP
     dish.canonical_name.toLowerCase().includes(search.toLowerCase()) ||
     dish.aliases.some(alias => alias.toLowerCase().includes(search.toLowerCase()))
   );
+
+  const handleDishSelect = (dish: DishWithVariant) => {
+    if (dish.has_recipe) {
+      onSelect(dish.id);
+      return;
+    }
+    
+    setPendingDish(dish);
+    setShowSourcePrompt(true);
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -391,6 +413,15 @@ export default function RecipePicker({ onSelect, onClose, onNewRecipe }: RecipeP
                         placeholder="Unit"
                         className="w-24 px-3 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                       />
+                      <select
+                        value={ing.source_type}
+                        onChange={(e) => updateIngredient(idx, 'source_type', e.target.value)}
+                        className="w-32 px-2 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-lg text-gray-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        <option value="unknown">Unknown</option>
+                        <option value="store_bought">Store-bought</option>
+                        <option value="homemade">Homemade</option>
+                      </select>
                       {formIngredients.length > 1 && (
                         <button
                           type="button"
@@ -483,7 +514,7 @@ export default function RecipePicker({ onSelect, onClose, onNewRecipe }: RecipeP
                   {filteredDishes.map((dish) => (
                     <button
                       key={dish.id}
-                      onClick={() => onSelect(dish.id)}
+                      onClick={() => handleDishSelect(dish)}
                       className="w-full text-left p-4 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-750 border border-gray-300 dark:border-gray-700 hover:border-blue-500 dark:hover:border-blue-600 rounded-lg transition-colors"
                     >
                       <h3 className="font-semibold text-gray-900 dark:text-white mb-1 capitalize">{dish.canonical_name}</h3>
@@ -508,6 +539,54 @@ export default function RecipePicker({ onSelect, onClose, onNewRecipe }: RecipeP
             </>
           )}
         </div>
+
+        {showSourcePrompt && pendingDish && (
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+            <div className="bg-white dark:bg-gray-900 rounded-lg shadow-xl p-6 w-full max-w-md border border-gray-200 dark:border-gray-800">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
+                Add recipe for “{pendingDish.canonical_name}”?
+              </h3>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+                Is this store-bought or homemade?
+              </p>
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onSelect(pendingDish.id);
+                    setShowSourcePrompt(false);
+                    setPendingDish(null);
+                    onClose();
+                  }}
+                  className="flex-1 py-2 px-4 bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-700 transition-colors"
+                >
+                  Store-bought
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFormTitle(pendingDish.canonical_name);
+                    setShowForm(true);
+                    setShowSourcePrompt(false);
+                  }}
+                  className="flex-1 py-2 px-4 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
+                >
+                  Homemade
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowSourcePrompt(false);
+                  setPendingDish(null);
+                }}
+                className="mt-3 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Footer - only show when not in form mode */}
         {!showForm && (

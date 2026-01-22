@@ -4,14 +4,52 @@ import { generateWeeklyMealPlan } from '@/lib/mealPlanGenerator';
 import { compileDish } from '@/lib/dishCompiler';
 import { checkRateLimit } from '@/lib/rateLimiter';
 import { checkTokenLimit } from '@/lib/tokenLimits';
-import { ComponentType } from '@/types/relish';
+import { ComponentType, MealSlot, Dish, MealAnchor, DishEffortLevel, MealPolicyLogInsert } from '@/types/relish';
 import { getISTTimestamp } from '@/lib/utils/dateUtils';
+import { batchComposeMeals } from '@/lib/mealComposer';
+import { MEAL_COMPOSITION_RULES } from '@/config/meal-composition';
+import {
+  buildMealSignature,
+  buildWeeklyAnchorPlan,
+  createMealPolicyState,
+  applyPolicyToMealComponents,
+  type MealHistory,
+  type MealPolicyState,
+  type MealPlanGenerationConfigShape,
+} from '@/lib/mealPlanPolicy';
+import crypto from 'crypto';
 
 // Create Supabase client with service role for server-side operations
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
+
+// ============================================================================
+// Helper: Normalize date to Monday of the week
+// ============================================================================
+
+function normalizeToMonday(dateString: string): string {
+  const date = new Date(dateString);
+  const currentDay = date.getUTCDay();
+  
+  // Calculate days to subtract to get to Monday (1)
+  // Sunday (0) -> subtract 6 days, Monday (1) -> subtract 0, Tuesday (2) -> subtract 1, etc.
+  const daysToMonday = currentDay === 0 ? 6 : currentDay - 1;
+  
+  const monday = new Date(date);
+  monday.setUTCDate(date.getUTCDate() - daysToMonday);
+  
+  return monday.toISOString().split('T')[0];
+}
+
+const DEFAULT_GENERATION_CONFIG: MealPlanGenerationConfigShape = {
+  rice_plate_ratio: 0.5,
+  roti_plate_ratio: 0.5,
+  familiarity_mode: 'balanced',
+  effort_ceiling: DishEffortLevel.MEDIUM,
+  exploration_budget: 1,
+};
 
 // ============================================================================
 // Helper: Normalize and validate component types to prevent enum errors
@@ -93,152 +131,287 @@ function shuffle<T>(array: T[]): T[] {
   return shuffled;
 }
 
-/**
- * Get dishes used in the last 2 weeks for the user
- * OPTIMIZED: Single query with joins
- */
-async function getRecentlyUsedDishes(userId: string): Promise<string[]> {
-  console.time('⏱️  Query: Get recently used dishes');
+function hashWeeklySignature(signature: string): string {
+  return crypto.createHash('sha256').update(signature).digest('hex');
+}
+
+function buildWeeklySignature(meals: Array<{
+  day: number;
+  slot: string;
+  meal_anchor: MealAnchor;
+  components: Array<{ dish_id?: string | null }>;
+}>): string {
+  const normalized = meals
+    .map(meal => {
+      const dishIds = (meal.components || [])
+        .map(component => component.dish_id)
+        .filter(Boolean)
+        .sort()
+        .join('|');
+      return `${meal.day}-${meal.slot}:${meal.meal_anchor}:${dishIds}`;
+    })
+    .sort()
+    .join('::');
+  return normalized;
+}
+
+function getMinComponentsForAnchor(slot: MealSlot, anchor: MealAnchor): number {
+  if ((slot === MealSlot.LUNCH || slot === MealSlot.DINNER) && anchor === MealAnchor.COMPLETE_ONE_BOWL) {
+    return 1;
+  }
+  const rule = MEAL_COMPOSITION_RULES[slot];
+  return rule?.minComponents ?? 1;
+}
+
+async function getMealPlanGenerationConfig(mealPlanId: string): Promise<MealPlanGenerationConfigShape> {
+  const { data, error } = await supabase
+    .from('meal_plan_generation_config')
+    .select('*')
+    .eq('meal_plan_id', mealPlanId)
+    .maybeSingle();
+
+  if (error || !data) {
+    const { data: created } = await supabase
+      .from('meal_plan_generation_config')
+      .insert({
+        meal_plan_id: mealPlanId,
+        rice_plate_ratio: DEFAULT_GENERATION_CONFIG.rice_plate_ratio,
+        roti_plate_ratio: DEFAULT_GENERATION_CONFIG.roti_plate_ratio,
+        familiarity_mode: DEFAULT_GENERATION_CONFIG.familiarity_mode,
+        effort_ceiling: DEFAULT_GENERATION_CONFIG.effort_ceiling,
+        exploration_budget: DEFAULT_GENERATION_CONFIG.exploration_budget,
+      })
+      .select()
+      .single();
+
+    return created
+      ? {
+          rice_plate_ratio: created.rice_plate_ratio ?? DEFAULT_GENERATION_CONFIG.rice_plate_ratio,
+          roti_plate_ratio: created.roti_plate_ratio ?? DEFAULT_GENERATION_CONFIG.roti_plate_ratio,
+          familiarity_mode: created.familiarity_mode ?? DEFAULT_GENERATION_CONFIG.familiarity_mode,
+          effort_ceiling: created.effort_ceiling ?? DEFAULT_GENERATION_CONFIG.effort_ceiling,
+          exploration_budget: created.exploration_budget ?? DEFAULT_GENERATION_CONFIG.exploration_budget,
+        }
+      : DEFAULT_GENERATION_CONFIG;
+  }
+
+  return {
+    rice_plate_ratio: data.rice_plate_ratio ?? DEFAULT_GENERATION_CONFIG.rice_plate_ratio,
+    roti_plate_ratio: data.roti_plate_ratio ?? DEFAULT_GENERATION_CONFIG.roti_plate_ratio,
+    familiarity_mode: data.familiarity_mode ?? DEFAULT_GENERATION_CONFIG.familiarity_mode,
+    effort_ceiling: data.effort_ceiling ?? DEFAULT_GENERATION_CONFIG.effort_ceiling,
+    exploration_budget: data.exploration_budget ?? DEFAULT_GENERATION_CONFIG.exploration_budget,
+  };
+}
+
+async function getRecentMealHistory(userId: string): Promise<MealHistory> {
   const twoWeeksAgo = new Date();
   twoWeeksAgo.setDate(twoWeeksAgo.getDate() - 14);
-  
-  const { data, error } = await supabase
+  const sinceDate = twoWeeksAgo.toISOString().split('T')[0];
+
+  const { data: plans } = await supabase
     .from('meal_plans')
     .select(`
       id,
-      meal_plan_items!inner (
-        meal_plates!inner (
-          meal_plate_components!inner (
-            dish_id
-          )
+      week_start_date,
+      meal_plan_items (
+        day_of_week,
+        meal_slot,
+        meal_anchor,
+        meal_plates (
+          meal_plate_components (dish_id)
         )
       )
     `)
     .eq('user_id', userId)
-    .gte('week_start_date', twoWeeksAgo.toISOString().split('T')[0]);
-  
-  console.timeEnd('⏱️  Query: Get recently used dishes');
-  
-  if (error || !data) return [];
-  
-  console.time('⏱️  Process: Extract dish IDs');
-  const dishIds = new Set<string>();
-  data.forEach((plan: any) => {
+    .gte('week_start_date', sinceDate);
+
+  const recentDishIds = new Set<string>();
+  const recentSlotDishIds = new Map<string, Set<string>>();
+  const recentDishAnchorPairs = new Set<string>();
+  const recentPlanSignatures = new Set<string>();
+
+  (plans || []).forEach((plan: any) => {
+    const mealsForSignature: Array<{
+      day: number;
+      slot: string;
+      meal_anchor: MealAnchor;
+      components: Array<{ dish_id?: string | null }>;
+    }> = [];
+
     plan.meal_plan_items?.forEach((item: any) => {
-      item.meal_plates?.meal_plate_components?.forEach((comp: any) => {
-        if (comp.dish_id) dishIds.add(comp.dish_id);
+      const slotKey = `${item.day_of_week}-${item.meal_slot}`;
+      const anchor = item.meal_anchor || MealAnchor.RICE_PLATE;
+      const dishIds = (item.meal_plates?.meal_plate_components || [])
+        .map((comp: any) => comp.dish_id)
+        .filter(Boolean);
+
+      dishIds.forEach((dishId: string) => {
+        recentDishIds.add(dishId);
+        recentDishAnchorPairs.add(`${dishId}:${anchor}`);
+        if (!recentSlotDishIds.has(slotKey)) {
+          recentSlotDishIds.set(slotKey, new Set());
+        }
+        recentSlotDishIds.get(slotKey)!.add(dishId);
+      });
+
+      mealsForSignature.push({
+        day: item.day_of_week,
+        slot: item.meal_slot,
+        meal_anchor: anchor,
+        components: dishIds.map((dishId: string) => ({ dish_id: dishId })),
       });
     });
+
+    if (mealsForSignature.length > 0) {
+      const signature = buildWeeklySignature(mealsForSignature);
+      recentPlanSignatures.add(hashWeeklySignature(signature));
+    }
   });
-  console.timeEnd('⏱️  Process: Extract dish IDs');
-  
-  return Array.from(dishIds);
+
+  const { data: explorationEvents } = await supabase
+    .from('meal_exploration_events')
+    .select('dish_id, meal_anchor')
+    .eq('user_id', userId)
+    .gte('created_at', `${sinceDate}T00:00:00`);
+
+  const recentExploredPairs = new Set<string>();
+  (explorationEvents || []).forEach((event: any) => {
+    if (event.dish_id && event.meal_anchor) {
+      recentExploredPairs.add(`${event.dish_id}:${event.meal_anchor}`);
+    }
+  });
+
+  return {
+    recentDishIds,
+    recentSlotDishIds,
+    recentDishAnchorPairs,
+    recentPlanSignatures,
+    recentExploredPairs,
+  };
 }
 
+
 /**
- * Distribute dishes to meal slots for the week
- * OPTIMIZED: Batch queries - only 2 DB calls instead of 70+
- * Returns slots that need AI generation (couldn't fill from database)
+ * Compose meals for the week using unified database-first approach
+ * Uses intelligent component-based composition for ALL meal types
+ * Returns slots that need AI generation (couldn't compose from database)
+ * 
+ * IMPORTANT: Only generates meals from TODAY forward if this is the current week
  */
-async function distributeDishesToSlots(
+async function composeMealsForWeek(
   userId: string,
   weekStartDate: string,
-  timestamp: string
+  timestamp: string,
+  config: MealPlanGenerationConfigShape,
+  history: MealHistory,
+  policy: MealPolicyState,
+  anchorPlan: Map<string, MealAnchor>,
+  logCandidate?: (entry: {
+    decision: 'accepted' | 'rejected';
+    reason?: string;
+    dish: Dish;
+    anchor: MealAnchor;
+    slot: MealSlot;
+    dayOfWeek: number;
+    role: string;
+    overlapStatus: string;
+    explorationUsed: boolean;
+    componentType: ComponentType;
+  }) => void
 ): Promise<{
-  filledSlots: Map<string, Array<{ dish_name: string; component_type: string; is_optional: boolean }>>;
+  filledSlots: Map<string, any[]>;
   emptySlots: Array<{ day: number; slot: string }>;
 }> {
   console.log(`\n${'='.repeat(80)}`);
-  console.log(`[${timestamp}] 🚀 STARTING HYBRID RECIPE SELECTION`);
+  console.log(`[${timestamp}] 🚀 STARTING UNIFIED MEAL COMPOSITION`);
   console.log(`${'='.repeat(80)}\n`);
-  console.time(`[${timestamp}] ⏱️  TOTAL: distributeDishesToSlots`);
+  console.time(`[${timestamp}] ⏱️  TOTAL: composeMealsForWeek`);
   
-  // Step 1: Get recently used dish IDs (1 query)
-  console.log(`[${timestamp}] 📋 Step 1: Fetching recently used dishes...`);
-  const recentDishIds = await getRecentlyUsedDishes(userId);
-  console.log(`[${timestamp}] ✅ Found ${recentDishIds.length} dishes used in last 2 weeks\n`);
+  // Step 1: Check if this is the current week and calculate start day
+  const today = new Date();
+  const todayString = today.toISOString().split('T')[0];
+  const currentMonday = normalizeToMonday(todayString);
+  const isCurrentWeek = weekStartDate === currentMonday;
   
-  // Step 2: Get ALL dishes with complete recipes in ONE query
-  console.log(`[${timestamp}] 📋 Step 2: Fetching all available dishes...`);
-  console.time(`[${timestamp}] ⏱️  Query: Get all dishes`);
-  const { data: allDishes } = await supabase
-    .from('dishes')
-    .select('id, canonical_name, usage_count, typical_meal_slots')
-    .order('usage_count', { ascending: false });
-  console.timeEnd(`[${timestamp}] ⏱️  Query: Get all dishes`);
-  
-  if (!allDishes || allDishes.length === 0) {
-    console.log(`[${timestamp}] ⚠️  No dishes in database, will use AI for all slots`);
-    const emptySlots = [];
-    for (let day = 0; day < 7; day++) {
-      for (const slot of ['breakfast', 'morning_snack', 'lunch', 'evening_snack', 'dinner']) {
-        emptySlots.push({ day, slot });
-      }
+  // Calculate which day of week today is (0=Mon, 1=Tue, ..., 6=Sun)
+  let startDay = 0;
+  if (isCurrentWeek) {
+    const weekStart = new Date(weekStartDate);
+    const daysSinceMonday = Math.floor((today.getTime() - weekStart.getTime()) / (1000 * 60 * 60 * 24));
+    startDay = Math.max(0, Math.min(6, daysSinceMonday)); // Clamp between 0-6
+    
+    if (startDay > 0) {
+      console.log(`[${timestamp}] 📅 Current week - generating only from day ${startDay} (${['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][startDay]}) to Sunday`);
     }
-    console.timeEnd(`[${timestamp}] ⏱️  TOTAL: distributeDishesToSlots`);
-    return { filledSlots: new Map(), emptySlots };
+  } else if (weekStartDate < currentMonday) {
+    // Past week - don't generate anything
+    console.log(`[${timestamp}] ⏭️  Past week detected - skipping generation (past weeks require manual user input)`);
+    console.timeEnd(`[${timestamp}] ⏱️  TOTAL: composeMealsForWeek`);
+    return { filledSlots: new Map(), emptySlots: [] };
   }
   
-  console.log(`[${timestamp}] ✅ Loaded ${allDishes.length} dishes from database\n`);
+  // Step 2: Use recently used dishes from history
+  console.log(`[${timestamp}] 📋 Step 1: Using recently used dishes from history...`);
+  const recentDishSet = history.recentDishIds;
+  console.log(`[${timestamp}] ✅ Found ${recentDishSet.size} dishes used in last 2 weeks\n`);
   
-  // Step 3: Filter in memory for each slot (no more DB queries!)
-  console.log(`[${timestamp}] 📋 Step 3: Distributing dishes to 35 slots (in-memory)...`);
-  console.time(`[${timestamp}] ⏱️  Process: In-memory filtering & selection`);
+  // Step 3: Generate slots only from today forward
+  const slots = ['breakfast', 'morning_snack', 'lunch', 'evening_snack', 'dinner'] as MealSlot[];
+  const allSlots: Array<{ slot: MealSlot; dayOfWeek: number }> = [];
   
-  const filledSlots = new Map();
-  const emptySlots = [];
-  
-  const slots = ['breakfast', 'morning_snack', 'lunch', 'evening_snack', 'dinner'];
-  
-  for (let day = 0; day < 7; day++) {
+  for (let day = startDay; day < 7; day++) {
     for (const slot of slots) {
-      const slotKey = `${day}-${slot}`;
-      
-      // Determine how many dishes this slot needs
-      let dishCount = 1; // Default for snacks
-      if (slot === 'breakfast') dishCount = 2;
-      if (slot === 'lunch' || slot === 'dinner') dishCount = 3;
-      
-      // Filter dishes suitable for this meal type (in memory, super fast!)
-      const suitableDishes = allDishes.filter(d => 
-        d.typical_meal_slots && Array.isArray(d.typical_meal_slots) && d.typical_meal_slots.includes(slot.toLowerCase())
-      );
-      
-      if (suitableDishes.length === 0) {
-        emptySlots.push({ day, slot });
-        continue;
-      }
-      
-      // Separate into recent and new
-      const newDishes = suitableDishes.filter(d => !recentDishIds.includes(d.id));
-      const recentDishesForSlot = suitableDishes.filter(d => recentDishIds.includes(d.id));
-      
-      // Calculate 25% overlap
-      const allowedRecentCount = Math.floor(dishCount * 0.25);
-      const newDishesNeeded = dishCount - allowedRecentCount;
-      
-      // Shuffle and select (in memory, instant!)
-      const selectedNew = shuffle(newDishes).slice(0, newDishesNeeded);
-      const selectedRecent = shuffle(recentDishesForSlot).slice(0, allowedRecentCount);
-      const selected = [...selectedNew, ...selectedRecent];
-      
-      if (selected.length >= dishCount) {
-        // Successfully filled from database!
-        filledSlots.set(slotKey, selected.slice(0, dishCount).map(d => ({
-          dish_name: d.canonical_name,
-          component_type: 'other', // Will be inferred
-          is_optional: false
-        })));
-      } else {
-        // Not enough dishes in database, mark for AI generation
-        emptySlots.push({ day, slot });
-      }
+      allSlots.push({ slot, dayOfWeek: day });
     }
   }
   
-  console.timeEnd(`[${timestamp}] ⏱️  Process: In-memory filtering & selection`);
-  console.log(`[${timestamp}] ✅ Database filled ${filledSlots.size}/35 slots, ${emptySlots.length} need AI\n`);
-  console.timeEnd(`[${timestamp}] ⏱️  TOTAL: distributeDishesToSlots`);
+  if (allSlots.length === 0) {
+    console.log(`[${timestamp}] ℹ️  No slots to generate (all days are in the past)`);
+    console.timeEnd(`[${timestamp}] ⏱️  TOTAL: composeMealsForWeek`);
+    return { filledSlots: new Map(), emptySlots: [] };
+  }
+  
+  console.log(`[${timestamp}] 📋 Step 2: Composing ${allSlots.length} meals using component-based logic...`);
+  // Step 4: Use batch meal composer (fetches all dishes once, composes all meals)
+  const composedMeals = await batchComposeMeals(userId, allSlots, recentDishSet, {
+    anchorPlan,
+    history,
+    policy,
+    effortCeiling: config.effort_ceiling ?? DishEffortLevel.MEDIUM,
+    logCandidate,
+  });
+  
+  // Step 5: Convert composed meals to expected format
+  const filledSlots = new Map<string, any[]>();
+  const emptySlots: Array<{ day: number; slot: string }> = [];
+  
+  for (const { slot, dayOfWeek } of allSlots) {
+    const slotKey = `${dayOfWeek}-${slot}`;
+    const dishes = composedMeals.get(slotKey);
+    
+    if (dishes && dishes.length > 0) {
+      // Successfully composed meal from database
+      filledSlots.set(slotKey, dishes.map((entry: any, idx: number) => ({
+        dish_id: entry.dish.id,
+        dish_name: entry.dish.canonical_name,
+        component_type: entry.componentType || entry.dish.primary_component_type || 'other',
+        is_optional: idx >= 2,
+        exploration: entry.exploration || false,
+        role: entry.role,
+        weight_band: entry.weightBand,
+        overlap_status: entry.overlapStatus,
+        meal_anchor: anchorPlan.get(slotKey),
+      })));
+    } else {
+      // Couldn't compose, need AI
+      emptySlots.push({ day: dayOfWeek, slot });
+    }
+  }
+  
+  console.timeEnd(`[${timestamp}] ⏱️  TOTAL: composeMealsForWeek`);
+  console.log(`[${timestamp}] ✅ Composed ${filledSlots.size}/${allSlots.length} meals from database`);
+  console.log(`[${timestamp}] 🤖 ${emptySlots.length} slots need AI generation\n`);
   
   return { filledSlots, emptySlots };
 }
@@ -246,10 +419,18 @@ async function distributeDishesToSlots(
 export async function POST(request: NextRequest) {
   try {
     const timestamp = getISTTimestamp();
-    const { weekStartDate, userId, excludeDishes = [] } = await request.json();
+    const { weekStartDate: rawWeekStartDate, userId, excludeDishes = [] } = await request.json();
 
     if (!userId) {
       return NextResponse.json({ error: 'User ID required' }, { status: 400 });
+    }
+
+    // ============================================================================
+    // CRITICAL: Normalize weekStartDate to Monday to prevent duplicate meal plans
+    // ============================================================================
+    const weekStartDate = normalizeToMonday(rawWeekStartDate);
+    if (weekStartDate !== rawWeekStartDate) {
+      console.log(`[${timestamp}] 📅 Normalized week start date: ${rawWeekStartDate} → ${weekStartDate} (Monday)`);
     }
 
     // 1. Check rate limits (10 calls/hour)
@@ -271,82 +452,10 @@ export async function POST(request: NextRequest) {
       console.log(`[${timestamp}] 📋 Excluding previously used dishes: ${excludeDishes.join(', ')}`);
     }
 
-    // ============================================================================
-    // HYBRID STRATEGY: Database-first (with 25% overlap), then AI for gaps
-    // ============================================================================
-    
-    console.time(`[${timestamp}] ⏱️  TOTAL: Hybrid recipe selection`);
-    
-    // Step 1: Try to fill slots from database (prioritize existing recipes)
-    const { filledSlots, emptySlots } = await distributeDishesToSlots(userId, weekStartDate, timestamp);
-    
-    let generatedPlan: any = { meals: [] };
-    
-    // Step 2: Only call AI if there are empty slots
-    if (emptySlots.length > 0) {
-      console.log(`[${timestamp}] 🤖 Calling AI to generate ${emptySlots.length} slots...`);
-      console.time(`[${timestamp}] ⏱️  AI: generateWeeklyMealPlan`);
-      generatedPlan = await generateWeeklyMealPlan(userId, excludeDishes);
-      console.timeEnd(`[${timestamp}] ⏱️  AI: generateWeeklyMealPlan`);
-      console.log(`[${timestamp}] ✅ OpenAI returned ${generatedPlan.meals.length} meals\n`);
-    } else {
-      console.log(`[${timestamp}] ✅ All slots filled from database! No AI needed.\n`);
-    }
-    
-    // Step 3: Merge database-filled slots with AI-generated slots
-    console.log(`[${timestamp}] 📋 Step 4: Merging database dishes with AI dishes...`);
-    console.time(`[${timestamp}] ⏱️  Process: Merge DB & AI meals`);
-    
-    const allMeals = [];
-    
-    for (let day = 0; day < 7; day++) {
-      for (const slot of ['breakfast', 'morning_snack', 'lunch', 'evening_snack', 'dinner']) {
-        const slotKey = `${day}-${slot}`;
-        
-        if (filledSlots.has(slotKey)) {
-          // Use database dishes
-          allMeals.push({
-            day,
-            slot,
-            components: filledSlots.get(slotKey)
-          });
-        } else {
-          // Use AI-generated meal (if available)
-          const aiMeal = generatedPlan.meals.find((m: any) => m.day === day && m.slot === slot);
-          if (aiMeal) {
-            allMeals.push(aiMeal);
-          }
-        }
-      }
-    }
-    
-    console.timeEnd(`[${timestamp}] ⏱️  Process: Merge DB & AI meals`);
-    console.log(`[${timestamp}] ✅ Final meal plan: ${allMeals.length} meals (${filledSlots.size} from DB, ${emptySlots.length} from AI)\n`);
-    console.timeEnd(`[${timestamp}] ⏱️  TOTAL: Hybrid recipe selection`);
-    
-    // Use the merged meal plan instead of just AI-generated
-    generatedPlan.meals = allMeals;
-
-    // 2. Fetch all dishes from database for matching
-    const { data: allDishes, error: dishesError } = await supabase
-      .from('dishes')
-      .select('id, canonical_name, aliases');
-
-    if (dishesError) throw dishesError;
-
-    // Create a map for fuzzy matching
-    const dishNameMap = new Map<string, string>();
-    allDishes?.forEach(dish => {
-      dishNameMap.set(dish.canonical_name.toLowerCase(), dish.id);
-      dish.aliases?.forEach((alias: string) => {
-        dishNameMap.set(alias.toLowerCase(), dish.id);
-      });
-    });
-
-    // 3. Get or create meal plan for this week
+    // 3. Get or create meal plan early (needed for config)
     let { data: mealPlan, error: planError } = await supabase
       .from('meal_plans')
-      .select('id')
+      .select('id, week_start_date, week_name')
       .eq('user_id', userId)
       .eq('week_start_date', weekStartDate)
       .maybeSingle();
@@ -359,11 +468,310 @@ export async function POST(request: NextRequest) {
           week_start_date: weekStartDate,
           week_name: `Week of ${new Date(weekStartDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`,
         })
-        .select('id')
+        .select('id, week_start_date, week_name')
         .single();
 
       if (createError) throw createError;
       mealPlan = newPlan;
+      console.log(`[${timestamp}] ✅ Created meal plan: ${mealPlan.week_name} (ID: ${mealPlan.id})`);
+    } else {
+      console.log(`[${timestamp}] ✅ Found existing meal plan: ${mealPlan.week_name} (ID: ${mealPlan.id})`);
+    }
+
+    const planConfig = await getMealPlanGenerationConfig(mealPlan.id);
+    const history = await getRecentMealHistory(userId);
+
+    // Build anchor plan and policy state
+    const today = new Date();
+    const todayString = today.toISOString().split('T')[0];
+    const currentMonday = normalizeToMonday(todayString);
+    const isCurrentWeek = weekStartDate === currentMonday;
+    let startDay = 0;
+    if (isCurrentWeek) {
+      const weekStart = new Date(weekStartDate);
+      const daysSinceMonday = Math.floor((today.getTime() - weekStart.getTime()) / (1000 * 60 * 60 * 24));
+      startDay = Math.max(0, Math.min(6, daysSinceMonday));
+    }
+
+    const slotsList: Array<{ slot: MealSlot; dayOfWeek: number }> = [];
+    for (let day = startDay; day < 7; day++) {
+      for (const slot of ['breakfast', 'morning_snack', 'lunch', 'evening_snack', 'dinner'] as MealSlot[]) {
+        slotsList.push({ slot, dayOfWeek: day });
+      }
+    }
+
+    const anchorPlan = buildWeeklyAnchorPlan({
+      slots: slotsList,
+      ricePlateRatio: planConfig.rice_plate_ratio,
+      rotiPlateRatio: planConfig.roti_plate_ratio,
+    });
+
+    const policy = createMealPolicyState({
+      overlapRatio: 0.25,
+      explorationBudget: planConfig.exploration_budget ?? 1,
+    });
+    const policyLogs: MealPolicyLogInsert[] = [];
+    const logCandidate = (entry: {
+      decision: 'accepted' | 'rejected';
+      reason?: string;
+      dish: Dish;
+      anchor: MealAnchor;
+      slot: MealSlot;
+      dayOfWeek: number;
+      role: string;
+      overlapStatus: string;
+      explorationUsed: boolean;
+      componentType: ComponentType;
+    }) => {
+      policyLogs.push({
+        user_id: userId,
+        meal_plan_id: mealPlan.id,
+        meal_plan_item_id: null,
+        dish_variant_id: entry.dish.id,
+        dish_universe_id: entry.dish.dish_universe_id ?? null,
+        meal_anchor: entry.anchor,
+        day_of_week: entry.dayOfWeek,
+        meal_slot: entry.slot,
+        decision: entry.decision,
+        reason: entry.reason ?? null,
+        dish_role: entry.role ?? null,
+        overlap_status: entry.overlapStatus ?? null,
+        exploration_flag: entry.explorationUsed ?? false,
+        metadata: {
+          component_type: entry.componentType,
+          dish_name: entry.dish.canonical_name,
+        },
+      });
+    };
+
+    // ============================================================================
+    // UNIFIED COMPOSITION: Database-first with intelligent component matching
+    // ============================================================================
+    
+    console.time(`[${timestamp}] ⏱️  TOTAL: Unified meal composition`);
+    
+    // Step 1: Compose meals from database using component-based logic
+    const { filledSlots, emptySlots } = await composeMealsForWeek(
+      userId,
+      weekStartDate,
+      timestamp,
+      planConfig,
+      history,
+      policy,
+      anchorPlan,
+      logCandidate
+    );
+    
+    let generatedPlan: any = { meals: [] };
+    
+    // Step 2: Only call AI if there are empty slots
+    if (emptySlots.length > 0) {
+      console.log(`[${timestamp}] 🤖 Calling AI to generate ${emptySlots.length} slots...`);
+      console.time(`[${timestamp}] ⏱️  AI: generateWeeklyMealPlan`);
+      const aiExcludeDishes = [...new Set(excludeDishes)];
+      generatedPlan = await generateWeeklyMealPlan(userId, aiExcludeDishes);
+      console.timeEnd(`[${timestamp}] ⏱️  AI: generateWeeklyMealPlan`);
+      console.log(`[${timestamp}] ✅ OpenAI returned ${generatedPlan.meals.length} meals\n`);
+    } else {
+      console.log(`[${timestamp}] ✅ All slots filled from database! No AI needed.\n`);
+    }
+
+    // Fetch dishes for matching and policy evaluation
+    const { data: allDishes, error: dishesError } = await supabase
+      .from('dishes')
+      .select('id, canonical_name, aliases, primary_component_type, effort_level, serving_context_weight, usage_count, dish_universe_id');
+
+    if (dishesError) throw dishesError;
+
+    const dishNameMap = new Map<string, string>();
+    const dishLookup = new Map<string, Dish>();
+    allDishes?.forEach(dish => {
+      dishLookup.set(dish.id, dish as Dish);
+      dishNameMap.set(dish.canonical_name.toLowerCase(), dish.id);
+      dish.aliases?.forEach((alias: string) => {
+        dishNameMap.set(alias.toLowerCase(), dish.id);
+      });
+    });
+
+    // Step 3: Merge database-filled slots with AI-generated slots using policy
+    console.log(`[${timestamp}] 📋 Step 4: Merging database dishes with AI dishes...`);
+    console.time(`[${timestamp}] ⏱️  Process: Merge DB & AI meals`);
+
+    const allMeals: any[] = [];
+    const retrySlots: Array<{ day: number; slot: MealSlot }> = [];
+
+    for (let day = 0; day < 7; day++) {
+      for (const slot of ['breakfast', 'morning_snack', 'lunch', 'evening_snack', 'dinner'] as MealSlot[]) {
+        const slotKey = `${day}-${slot}`;
+        const anchor = anchorPlan.get(slotKey) || MealAnchor.RICE_PLATE;
+
+        if (filledSlots.has(slotKey)) {
+          const components = filledSlots.get(slotKey) || [];
+          const mealSignature = buildMealSignature(slot, anchor, components.map(component => component.dish_id).filter(Boolean));
+          if (!policy.usedMealSignatures.has(mealSignature)) {
+            policy.usedMealSignatures.add(mealSignature);
+          }
+
+          const meal = {
+            day,
+            slot,
+            meal_anchor: anchor,
+            components,
+            source: 'db',
+          };
+          allMeals.push(meal);
+
+          continue;
+        }
+
+        const aiMeal = generatedPlan.meals.find((m: any) => m.day === day && m.slot === slot);
+        if (!aiMeal) continue;
+
+        if (aiMeal.meal_anchor && aiMeal.meal_anchor !== anchor) {
+          console.log(`[${timestamp}] ⚠️ AI anchor mismatch for ${slotKey}: ${aiMeal.meal_anchor} -> ${anchor}`);
+        }
+
+        const evaluated = applyPolicyToMealComponents({
+          components: aiMeal.components || [],
+          day,
+          slot,
+          anchor,
+          dishNameMap,
+          dishLookup,
+          history,
+          policy,
+          effortCeiling: planConfig.effort_ceiling ?? DishEffortLevel.MEDIUM,
+        });
+        if (evaluated.logs.length > 0) {
+          evaluated.logs.forEach(log => {
+            policyLogs.push({
+              user_id: userId,
+              meal_plan_id: mealPlan.id,
+              meal_plan_item_id: null,
+              dish_variant_id: log.dish_id ?? null,
+              dish_universe_id: log.dish_universe_id ?? null,
+              meal_anchor: log.meal_anchor,
+              day_of_week: log.day_of_week,
+              meal_slot: log.meal_slot,
+              decision: log.decision,
+              reason: log.reason ?? null,
+              dish_role: log.dish_role ?? null,
+              overlap_status: log.overlap_status ?? null,
+              exploration_flag: log.exploration ?? false,
+              metadata: log.metadata ?? null,
+            });
+          });
+        }
+
+        const minComponents = getMinComponentsForAnchor(slot, anchor);
+        if (evaluated.components.length < minComponents) {
+          console.log(`[${timestamp}] ❌ AI meal rejected for ${slotKey} - insufficient components`);
+          retrySlots.push({ day, slot });
+          continue;
+        }
+
+        const mealSignature = buildMealSignature(slot, anchor, evaluated.components.map(component => component.dish_id).filter(Boolean));
+        if (policy.usedMealSignatures.has(mealSignature)) {
+          console.log(`[${timestamp}] ❌ Duplicate meal signature for ${slotKey}`);
+          retrySlots.push({ day, slot });
+          continue;
+        }
+        policy.usedMealSignatures.add(mealSignature);
+
+        const meal = {
+          day,
+          slot,
+          meal_anchor: anchor,
+          components: evaluated.components,
+          source: 'ai',
+        };
+        allMeals.push(meal);
+      }
+    }
+
+    if (retrySlots.length > 0) {
+      console.log(`[${timestamp}] 🔁 Re-trying ${retrySlots.length} slots due to policy constraints...`);
+      const retryExclude = [...new Set([...excludeDishes])];
+      const retryPlan = await generateWeeklyMealPlan(userId, retryExclude);
+
+      for (const { day, slot } of retrySlots) {
+        const slotKey = `${day}-${slot}`;
+        const anchor = anchorPlan.get(slotKey) || MealAnchor.RICE_PLATE;
+        const retryMeal = retryPlan.meals.find((m: any) => m.day === day && m.slot === slot);
+        if (!retryMeal) continue;
+
+        const evaluated = applyPolicyToMealComponents({
+          components: retryMeal.components || [],
+          day,
+          slot,
+          anchor,
+          dishNameMap,
+          dishLookup,
+          history,
+          policy,
+          effortCeiling: planConfig.effort_ceiling ?? DishEffortLevel.MEDIUM,
+        });
+        if (evaluated.logs.length > 0) {
+          evaluated.logs.forEach(log => {
+            policyLogs.push({
+              user_id: userId,
+              meal_plan_id: mealPlan.id,
+              meal_plan_item_id: null,
+              dish_variant_id: log.dish_id ?? null,
+              dish_universe_id: log.dish_universe_id ?? null,
+              meal_anchor: log.meal_anchor,
+              day_of_week: log.day_of_week,
+              meal_slot: log.meal_slot,
+              decision: log.decision,
+              reason: log.reason ?? null,
+              dish_role: log.dish_role ?? null,
+              overlap_status: log.overlap_status ?? null,
+              exploration_flag: log.exploration ?? false,
+              metadata: log.metadata ?? null,
+            });
+          });
+        }
+
+        const minComponents = getMinComponentsForAnchor(slot, anchor);
+        if (evaluated.components.length < minComponents) {
+          console.warn(`[${timestamp}] ⚠️ Retry failed for ${slotKey} - insufficient components`);
+          continue;
+        }
+
+        const mealSignature = buildMealSignature(slot, anchor, evaluated.components.map(component => component.dish_id).filter(Boolean));
+        if (policy.usedMealSignatures.has(mealSignature)) {
+          console.warn(`[${timestamp}] ⚠️ Retry failed for ${slotKey} - duplicate signature`);
+          continue;
+        }
+
+        policy.usedMealSignatures.add(mealSignature);
+        const meal = {
+          day,
+          slot,
+          meal_anchor: anchor,
+          components: evaluated.components,
+          source: 'ai',
+        };
+
+        const existingIndex = allMeals.findIndex((m: any) => m.day === day && m.slot === slot);
+        if (existingIndex >= 0) {
+          allMeals[existingIndex] = meal;
+        } else {
+          allMeals.push(meal);
+        }
+      }
+    }
+
+    console.timeEnd(`[${timestamp}] ⏱️  Process: Merge DB & AI meals`);
+    console.log(`[${timestamp}] ✅ Final meal plan: ${allMeals.length} meals (${filledSlots.size} from DB, ${emptySlots.length} from AI)\n`);
+    console.timeEnd(`[${timestamp}] ⏱️  TOTAL: Unified meal composition`);
+
+    generatedPlan.meals = allMeals;
+
+    const weeklySignature = hashWeeklySignature(buildWeeklySignature(allMeals));
+    if (history.recentPlanSignatures.has(weeklySignature)) {
+      console.warn(`[${timestamp}] ❌ Identical weekly plan detected - rejecting generation`);
+      return NextResponse.json({ error: 'Identical weekly plan detected' }, { status: 409 });
     }
 
     // 4. Get existing meal plan items that have components (truly filled slots)
@@ -379,7 +787,7 @@ export async function POST(request: NextRequest) {
       .eq('meal_plan_id', mealPlan.id);
 
     // Only preserve slots that have actual components (not empty containers)
-    const filledSlots = new Set(
+    const preservedSlots = new Set(
       existingItems
         ?.filter((item: any) => item.meal_plates?.meal_plate_components?.length > 0)
         .map((item: any) => `${item.day_of_week}-${item.meal_slot}`) || []
@@ -389,7 +797,7 @@ export async function POST(request: NextRequest) {
     console.log(`[${timestamp}] 💾 SAVING TO DATABASE`);
     console.log(`${'='.repeat(80)}\n`);
     console.log(`[${timestamp}] 📝 Creating meal plan items for empty slots only...`);
-    console.log(`[${timestamp}] Found ${filledSlots.size} filled slots to preserve (with components)`);
+    console.log(`[${timestamp}] Found ${preservedSlots.size} filled slots to preserve (with components)`);
     console.time(`[${timestamp}] ⏱️  TOTAL: Database insertions`);
 
     let mealsCreated = 0;
@@ -400,7 +808,7 @@ export async function POST(request: NextRequest) {
       const slotKey = `${meal.day}-${meal.slot}`;
       
       // Skip if user already has a filled slot (with components)
-      if (filledSlots.has(slotKey)) {
+      if (preservedSlots.has(slotKey)) {
         console.log(`[${timestamp}] ⏭️  Skipping ${meal.slot} on day ${meal.day} - user has existing meal`);
         continue;
       }
@@ -419,6 +827,7 @@ export async function POST(request: NextRequest) {
           meal_plan_id: mealPlan.id,
           day_of_week: meal.day,
           meal_slot: meal.slot,
+          meal_anchor: meal.meal_anchor,
           dish_name: meal.components[0]?.dish_name || 'Multi-dish meal',
           dish_id: null, // Multi-dish meal doesn't have single dish_id
         })
@@ -503,11 +912,12 @@ export async function POST(request: NextRequest) {
         try {
         components.push({
           meal_plate_id: plateId,
-            component_type: validatedType, // Use validated type
+          component_type: validatedType, // Use validated type
           dish_name: comp.dish_name,
           dish_id: matchedDishId || null,
           sort_order: idx,
           is_optional: comp.is_optional || false,
+          exploration: comp.exploration || false,
           servings: 4, // Default serving size for household
         });
         } catch (typeError) {
@@ -545,6 +955,32 @@ export async function POST(request: NextRequest) {
             await supabase.rpc('increment_dish_usage', { dish_id: dishId });
           }
         }
+
+        const explorationPayload = components
+          .filter(c => c.exploration && c.dish_id)
+          .map(c => ({
+            user_id: userId,
+            meal_plan_id: mealPlan.id,
+            meal_plan_item_id: mealItem.id,
+            dish_id: c.dish_id,
+            meal_anchor: meal.meal_anchor,
+            day_of_week: meal.day,
+            meal_slot: meal.slot,
+            weight_band: c.weight_band || 'unknown',
+            role: c.role || 'unknown',
+            metadata: {
+              component_type: c.component_type,
+              dish_name: c.dish_name,
+            },
+          }));
+        if (explorationPayload.length > 0) {
+          const { error: explorationError } = await supabase
+            .from('meal_exploration_events')
+            .insert(explorationPayload);
+          if (explorationError) {
+            console.error(`[${timestamp}] ❌ Failed to log exploration events:`, explorationError);
+          }
+        }
         }
       } catch (insertError) {
         console.error(`[${timestamp}] ❌ Failed to insert components for ${meal.slot} on day ${meal.day}:`, insertError);
@@ -554,6 +990,15 @@ export async function POST(request: NextRequest) {
 
     console.timeEnd(`[${timestamp}] ⏱️  TOTAL: Database insertions`);
     console.log(`[${timestamp}] ✅ Created ${mealsCreated} meals with ${componentsCreated} components\n`);
+
+    if (policyLogs.length > 0) {
+      const { error: policyLogError } = await supabase
+        .from('meal_policy_logs')
+        .insert(policyLogs);
+      if (policyLogError) {
+        console.error(`[${timestamp}] ❌ Failed to log policy decisions:`, policyLogError);
+      }
+    }
 
     // 6. Compile any dishes that don't have recipe_variants yet
     console.log(`[${timestamp}] 🔄 Checking for dishes needing compilation...`);

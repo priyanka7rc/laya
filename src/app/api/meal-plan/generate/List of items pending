@@ -1,16 +1,25 @@
 List of items pending
-"Grocery Readiness" on Home Page to be removed (just comment out the code)
-Random links to other pages need to be removed e.g. /meals /grocery
-What exactly is happening when you click on a dish name on the /meals page?
-Can we add a Morning Snack and Evening Snack to the meal plan?
-Need to add feature to edit a specific dish name in the meal plan
+x - "Grocery Readiness" on Home Page to be removed (just comment out the code)
+x - Random links to other pages need to be removed e.g. /meals /grocery
+x - What exactly is happening when you click on a dish name on the /meals page?
+x - Can we add a Morning Snack and Evening Snack to the meal plan?
+x - Need to add feature to edit a specific dish name in the meal plan
 Activity page to include something even if the user has not used the app enough this week - maybe point to the potential of the app. Make this contextual e.g. if there was an Indian festival this week - try to do a callback to making a regional dish based on that
-Make the Brain Dump button more visible
-Weekly Meal Plan header to include the dates of the current week
-Can we swap columns and rows i.e. days as columns and meals as rows?
-Navigation to previous week's meal plan to be added
+x - Make the Brain Dump button more visible
+x - Weekly Meal Plan header to include the dates of the current week
+x - Can we swap columns and rows i.e. days as columns and meals as rows?
+x - Navigation to previous week's meal plan to be added
 Daily view to be added
-What is this confidence score on the recipe page? How is this calculated? Do we need to show this to the user?
+x - What is this confidence score on the recipe page? How is this calculated? Do we need to show this to the user?
 Would like to add a preference layer to this page - allergens, flavour preferences, cuisine preferences etc.
-Logic to ensure no two weekly meal plans to be the same across two months
-What if the user clicks on generate again after meal plan is generated because they didnt like the options? what happens then?
+x - Logic to ensure no two weekly meal plans to be the same across two months
+x - What if the user clicks on generate again after meal plan is generated because they didnt like the options? what happens then?
+
+
+Jan 19:
+1. Daily view to be added
+2. Would like to add a preference layer to this page - allergens, flavour preferences, cuisine preferences etc.
+3. Activity page to include something even if the user has not used the app enough this week maybe point to the potential of the app. Make this contextual e.g. if there was an Indian festival this week - try to do a callback to making a regional dish based on that.
+4. In Edit Recipe add these functionalities 
+a) "+Add Ingredient" and "+Add Step" links to be added to the bottom below the latest ingredient or step respectively rather than at the top
+b) to add a new ingredient to the database

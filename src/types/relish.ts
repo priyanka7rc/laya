@@ -19,6 +19,20 @@ export enum MealSlot {
   DINNER = 'dinner',
 }
 
+export enum MealAnchor {
+  COMPLETE_ONE_BOWL = 'complete_one_bowl',
+  RICE_PLATE = 'rice_plate',
+  ROTI_PLATE = 'roti_plate',
+  BREAKFAST_PLATE = 'breakfast_plate',
+  SNACK = 'snack',
+}
+
+export enum DishEffortLevel {
+  EASY = 'easy',
+  MEDIUM = 'medium',
+  HIGH = 'high',
+}
+
 export enum UnitClass {
   WEIGHT = 'weight',
   VOLUME = 'volume',
@@ -48,6 +62,11 @@ export interface Dish {
   aliases: string[];
   ontology_tokens: string[];
   typical_meal_slots: string[];
+  dish_universe_id?: string | null;
+  primary_component_type: ComponentType | null;
+  effort_level?: DishEffortLevel | null;
+  serving_context_weight?: Partial<Record<MealAnchor, number>> | null;
+  usage_count?: number | null;
   created_at: string;
 }
 
@@ -104,11 +123,23 @@ export interface MealPlan {
   created_at: string;
 }
 
+export interface MealPlanGenerationConfig {
+  id: string;
+  meal_plan_id: string;
+  rice_plate_ratio: number;
+  roti_plate_ratio: number;
+  familiarity_mode: string | null;
+  effort_ceiling: DishEffortLevel | null;
+  exploration_budget: number;
+  created_at: string;
+}
+
 export interface MealPlanItem {
   id: string;
   meal_plan_id: string;
   day_of_week: number; // 0=Monday, 6=Sunday
   meal_slot: MealSlot;
+  meal_anchor: MealAnchor;
   dish_name: string;
   dish_id: string | null;
   recipe_variant_id: string | null;
@@ -157,6 +188,40 @@ export interface UserRecipeLink {
   chosen_at: string;
 }
 
+export interface MealExplorationEvent {
+  id: string;
+  user_id: string;
+  meal_plan_id: string;
+  meal_plan_item_id: string | null;
+  dish_id: string;
+  meal_anchor: MealAnchor;
+  day_of_week: number;
+  meal_slot: MealSlot;
+  weight_band: string;
+  role: string;
+  metadata: Record<string, any> | null;
+  created_at: string;
+}
+
+export interface MealPolicyLog {
+  id: string;
+  user_id: string;
+  meal_plan_id: string;
+  meal_plan_item_id: string | null;
+  dish_variant_id: string | null;
+  dish_universe_id: string | null;
+  meal_anchor: MealAnchor;
+  day_of_week: number;
+  meal_slot: MealSlot;
+  decision: 'accepted' | 'rejected';
+  reason: string | null;
+  dish_role: string | null;
+  overlap_status: string | null;
+  exploration_flag: boolean;
+  metadata: Record<string, any> | null;
+  created_at: string;
+}
+
 export interface AIUsageLog {
   id: string;
   user_id: string | null;
@@ -189,6 +254,7 @@ export interface IngredientJSON {
   unit: string;
   ingredient_id?: string;
   raw_text?: string;
+  source_type?: 'unknown' | 'store_bought' | 'homemade';
 }
 
 export interface StepJSON {
@@ -249,6 +315,12 @@ export type MealPlanUpdate = Partial<Omit<MealPlanInsert, 'user_id'>>;
 
 export type MealPlanItemInsert = Omit<MealPlanItem, 'id' | 'created_at'>;
 export type MealPlanItemUpdate = Partial<Omit<MealPlanItemInsert, 'meal_plan_id'>>;
+
+export type MealPlanGenerationConfigInsert = Omit<MealPlanGenerationConfig, 'id' | 'created_at'>;
+export type MealPlanGenerationConfigUpdate = Partial<Omit<MealPlanGenerationConfigInsert, 'meal_plan_id'>>;
+
+export type MealExplorationEventInsert = Omit<MealExplorationEvent, 'id' | 'created_at'>;
+export type MealPolicyLogInsert = Omit<MealPolicyLog, 'id' | 'created_at'>;
 
 export type GroceryListItemInsert = Omit<GroceryListItem, 'id' | 'updated_at'>;
 export type GroceryListItemUpdate = Partial<Omit<GroceryListItemInsert, 'grocery_list_id'>>;
@@ -434,6 +506,9 @@ export const COMPONENT_TYPE_LABELS: Record<ComponentType, string> = {
   [ComponentType.DAIRY]: 'Dairy',
   [ComponentType.SALAD]: 'Salad',
   [ComponentType.CRUNCH]: 'Crunch',
+  [ComponentType.SNACK]: 'Snack',
+  [ComponentType.FRUIT]: 'Fruit',
+  [ComponentType.BEVERAGE]: 'Beverage',
   [ComponentType.OTHER]: 'Other',
 };
 
@@ -452,6 +527,7 @@ export interface MealPlateComponent {
   servings: number | null;
   quantity_hint: string | null;
   is_optional: boolean;
+  exploration?: boolean;
   sort_order: number;
   tags: string[];
   created_at: string;
@@ -485,7 +561,8 @@ export interface MealComponentAI {
 
 export interface MealSlotAI {
   day: number; // 0-6 (Monday-Sunday)
-  slot: 'breakfast' | 'lunch' | 'dinner';
+  slot: 'breakfast' | 'morning_snack' | 'lunch' | 'evening_snack' | 'dinner';
+  meal_anchor: MealAnchor;
   components: MealComponentAI[];
 }
 

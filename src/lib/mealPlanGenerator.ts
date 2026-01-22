@@ -15,12 +15,21 @@ Requirements:
 - Each day should have 5 meal slots: breakfast, morning_snack, lunch, evening_snack, dinner
 - Main meals (breakfast, lunch, dinner) should have multiple components (like a traditional Indian thali)
 - Snacks (morning_snack, evening_snack) should be lighter: 1-2 components only
+- Morning snack and evening snack must be different dishes
 - Include variety across the week
+- Do not repeat any dish name within the week
 - Balance vegetarian and non-vegetarian options
 - Focus on comfort food and home-style dishes
 - Each lunch and dinner should have 3-5 components
+- Use Indian/local dish names only (avoid English translations like "pigeon pea dal"; use "toor dal")
+- For lunch/dinner, choose exactly ONE of these two patterns:
+  A) Thali: 1 carb + 1 protein + 1 veg (no extra mains)
+  B) Single-bowl complete meal (e.g., khichdi, biryani, pulao) with at most 1-2 light sides (condiment/dairy/salad/crunch)
+- Never mix pattern A and B in the same meal
+- Do NOT include more than one lentil-based item in the same meal (e.g., dal + rasam + sambar together are NOT allowed)
 - Each breakfast should have 2-3 components
 - Each snack should have 1-2 components (keep it simple and light)
+- Each meal MUST include a "meal_anchor" field and ALL dishes in that meal inherit that anchor
 
 🚨 CRITICAL: component_type MUST be EXACTLY one of these 12 values (no other values will be accepted):
 1. "carb" - rice, roti, paratha, naan, dosa, idli, upma, bread, pasta
@@ -48,6 +57,7 @@ Requirements:
 IMPORTANT: 
 - Slot values MUST be: "breakfast", "morning_snack", "lunch", "evening_snack", "dinner"
 - Component types MUST be from the 12 valid values above
+- meal_anchor MUST be one of: "complete_one_bowl", "rice_plate", "roti_plate", "breakfast_plate", "snack"
 
 Return ONLY valid JSON matching this exact structure:
 {
@@ -55,6 +65,7 @@ Return ONLY valid JSON matching this exact structure:
     {
       "day": 0,
       "slot": "breakfast",
+      "meal_anchor": "breakfast_plate",
       "components": [
         {
           "component_type": "carb",
@@ -71,6 +82,7 @@ Return ONLY valid JSON matching this exact structure:
     {
       "day": 0,
       "slot": "morning_snack",
+      "meal_anchor": "snack",
       "components": [
         {
           "component_type": "snack",
@@ -87,6 +99,7 @@ Return ONLY valid JSON matching this exact structure:
     {
       "day": 0,
       "slot": "lunch",
+      "meal_anchor": "rice_plate",
       "components": [
         {
           "component_type": "protein",
@@ -110,6 +123,7 @@ Return ONLY valid JSON matching this exact structure:
     {
       "day": 0,
       "slot": "evening_snack",
+      "meal_anchor": "snack",
       "components": [
         {
           "component_type": "snack",
@@ -126,6 +140,7 @@ Return ONLY valid JSON matching this exact structure:
     {
       "day": 0,
       "slot": "dinner",
+      "meal_anchor": "roti_plate",
       "components": [
         {
           "component_type": "carb",
@@ -155,6 +170,7 @@ Rules:
 - Lunch: 3-5 components (full thali-style meals)
 - Evening Snack: 1-2 components (light snack)
 - Dinner: 3-5 components (full thali-style meals)
+- Lunch/Dinner mains must be either (carb+protein+veg) OR one complete meal. Do not include more than one "complete meal" in the same slot.
 - Include variety - don't repeat dishes too often
 - Mark condiments/sides as is_optional: true
 - Use common Indian dish names in lowercase
@@ -177,6 +193,7 @@ export async function generateWeeklyMealPlanAI(
   
   try {
     let userPrompt = 'Generate a weekly meal plan.';
+    userPrompt += ' Avoid novelty dishes and keep overlap under 25% versus recent dishes.';
     
     if (preferences?.dietary_restrictions) {
       userPrompt += ` Dietary restrictions: ${preferences.dietary_restrictions.join(', ')}.`;
@@ -207,6 +224,19 @@ export async function generateWeeklyMealPlanAI(
     if (!parsed.meals || !Array.isArray(parsed.meals)) {
       throw new Error('Invalid meal plan structure');
     }
+
+    const allowedAnchors = new Set([
+      'complete_one_bowl',
+      'rice_plate',
+      'roti_plate',
+      'breakfast_plate',
+      'snack',
+    ]);
+    parsed.meals.forEach(meal => {
+      if (!meal.meal_anchor || !allowedAnchors.has(meal.meal_anchor)) {
+        throw new Error(`Invalid or missing meal_anchor for ${meal.slot} on day ${meal.day}`);
+      }
+    });
 
     const latencyMs = Date.now() - startTime;
 
@@ -251,6 +281,14 @@ export function generateWeeklyMealPlanRuleBased(): WeeklyMealPlanAI {
     [{ component_type: 'carb' as const, dish_name: 'paratha' }],
   ];
 
+  const snackOptions = [
+    [{ component_type: 'snack' as const, dish_name: 'samosa' }],
+    [{ component_type: 'fruit' as const, dish_name: 'banana' }],
+    [{ component_type: 'beverage' as const, dish_name: 'chai' }],
+    [{ component_type: 'snack' as const, dish_name: 'pakora' }],
+    [{ component_type: 'snack' as const, dish_name: 'namkeen' }],
+  ];
+
   const lunchDinnerOptions = [
     [
       { component_type: 'protein' as const, dish_name: 'dal tadka' },
@@ -282,20 +320,37 @@ export function generateWeeklyMealPlanRuleBased(): WeeklyMealPlanAI {
     meals.push({
       day,
       slot: 'breakfast',
+      meal_anchor: 'breakfast_plate',
       components: breakfastOptions[day % breakfastOptions.length],
+    });
+
+    meals.push({
+      day,
+      slot: 'morning_snack',
+      meal_anchor: 'snack',
+      components: snackOptions[day % snackOptions.length],
     });
 
     // Lunch
     meals.push({
       day,
       slot: 'lunch',
+      meal_anchor: day % 2 === 0 ? 'rice_plate' : 'roti_plate',
       components: lunchDinnerOptions[day % lunchDinnerOptions.length],
+    });
+
+    meals.push({
+      day,
+      slot: 'evening_snack',
+      meal_anchor: 'snack',
+      components: snackOptions[(day + 2) % snackOptions.length],
     });
 
     // Dinner
     meals.push({
       day,
       slot: 'dinner',
+      meal_anchor: day % 2 === 0 ? 'roti_plate' : 'rice_plate',
       components: lunchDinnerOptions[(day + 1) % lunchDinnerOptions.length],
     });
   }

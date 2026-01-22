@@ -28,14 +28,21 @@ export default function MealPlanPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   
-  // Get current Monday as default
+  const formatDateLocal = (date: Date) => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  // Get current Monday as default (local date to avoid UTC shifts)
   const getCurrentMonday = () => {
     const today = new Date();
     const currentDay = today.getDay();
     const monday = new Date(today);
     const daysToMonday = currentDay === 0 ? -6 : 1 - currentDay;
     monday.setDate(today.getDate() + daysToMonday);
-    return monday.toISOString().split('T')[0];
+    return formatDateLocal(monday);
   };
   
   const [selectedWeek, setSelectedWeek] = useState<string>(getCurrentMonday());
@@ -109,7 +116,7 @@ export default function MealPlanPage() {
   }, [loading, isFirstVisit, mealPlan.length, user, selectedWeek]);
 
   function getWeekDays(weekStart?: string) {
-    const monday = weekStart ? new Date(weekStart) : new Date();
+    const monday = weekStart ? new Date(`${weekStart}T00:00:00`) : new Date();
     if (!weekStart) {
       const currentDay = monday.getDay();
       const daysToMonday = currentDay === 0 ? -6 : 1 - currentDay;
@@ -121,7 +128,7 @@ export default function MealPlanPage() {
       const day = new Date(monday);
       day.setDate(monday.getDate() + i);
       days.push({
-        date: day.toISOString().split('T')[0],
+        date: formatDateLocal(day),
         label: day.toLocaleDateString('en-US', { weekday: 'short' }),
         fullLabel: day.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' }),
       });
@@ -129,12 +136,43 @@ export default function MealPlanPage() {
     return days;
   }
 
-  const navigateToPreviousWeek = () => {
-    const currentWeekDate = new Date(selectedWeek);
-    currentWeekDate.setDate(currentWeekDate.getDate() - 7);
-    const newWeek = currentWeekDate.toISOString().split('T')[0];
-    setSelectedWeek(newWeek);
-    router.push(`/mealplan?week=${newWeek}`, { scroll: false });
+  const navigateToPreviousWeek = async () => {
+    try {
+      // Find the most recent week before current with meal plan items
+      const { data: previousPlans, error } = await supabase
+        .from('meal_plans')
+        .select('week_start_date, meal_plan_items!inner(id)')
+        .eq('user_id', user?.id)
+        .lt('week_start_date', selectedWeek)
+        .order('week_start_date', { ascending: false })
+        .limit(1);
+      
+      if (error) {
+        console.error('Error fetching previous week:', error);
+        addToast({
+          type: 'error',
+          message: 'Failed to navigate to previous week',
+          duration: 3000,
+        });
+        return;
+      }
+      
+      if (previousPlans && previousPlans.length > 0) {
+        // Jump to the most recent populated week
+        const newWeek = previousPlans[0].week_start_date;
+        setSelectedWeek(newWeek);
+        router.push(`/mealplan?week=${newWeek}`, { scroll: false });
+      } else {
+        // No previous weeks with data
+        addToast({
+          type: 'info',
+          message: 'No previous meal plans found',
+          duration: 3000,
+        });
+      }
+    } catch (error) {
+      console.error('Error in navigateToPreviousWeek:', error);
+    }
   };
 
   const navigateToNextWeek = () => {
@@ -911,7 +949,23 @@ export default function MealPlanPage() {
               <div className="text-center flex-1 mx-4">
                 <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Weekly Meal Plan</h1>
                 <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-                  {weekDays[0]?.fullLabel} - {weekDays[6]?.fullLabel}
+                  {(() => {
+                    const today = formatDateLocal(new Date());
+                    const currentMonday = getCurrentMonday();
+                    const isThisWeek = selectedWeek === currentMonday;
+                    
+                    if (isThisWeek) {
+                      // Find first day that's today or later
+                      const firstAvailableDay = weekDays.find(day => day.date >= today);
+                      if (firstAvailableDay && firstAvailableDay.date !== weekDays[0].date) {
+                        // Show partial week indicator
+                        return `${firstAvailableDay.fullLabel} - ${weekDays[6].fullLabel}`;
+                      }
+                    }
+                    
+                    // Full week
+                    return `${weekDays[0]?.fullLabel} - ${weekDays[6]?.fullLabel}`;
+                  })()}
                 </p>
               </div>
               
@@ -995,7 +1049,7 @@ export default function MealPlanPage() {
               <table className="table-fixed border-collapse w-[1330px] md:w-[1640px]">
                 <thead>
                   <tr>
-                    <th className="p-2 md:p-3 text-left text-xs md:text-sm font-medium text-gray-700 dark:text-gray-400 border border-gray-300 dark:border-gray-800 bg-gray-100 dark:bg-gray-900 sticky left-0 z-20 w-[70px] md:w-[100px]">
+                    <th className="p-2 md:p-3 text-left text-xs md:text-sm font-medium text-gray-700 dark:text-gray-400 border border-gray-300 dark:border-gray-800 bg-gray-100 dark:bg-gray-900 sticky top-0 left-0 z-30 w-[70px] md:w-[100px]">
                       Meal
                     </th>
                     {weekDays.map((day) => {
@@ -1003,7 +1057,7 @@ export default function MealPlanPage() {
                       return (
                         <th
                           key={day.date}
-                          className={`p-2 md:p-3 text-center text-xs md:text-sm font-medium border border-gray-300 dark:border-gray-800 w-[180px] md:w-[220px] ${
+                          className={`p-2 md:p-3 text-center text-xs md:text-sm font-medium border border-gray-300 dark:border-gray-800 w-[180px] md:w-[220px] sticky top-0 z-20 ${
                             isToday 
                               ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-900 dark:text-blue-300' 
                               : 'bg-gray-100 dark:bg-gray-900 text-gray-700 dark:text-gray-400'
@@ -1019,61 +1073,74 @@ export default function MealPlanPage() {
                 <tbody>
                   {slots.map((slot) => (
                     <tr key={slot}>
-                      <td className="p-2 md:p-3 text-xs md:text-sm font-semibold text-gray-800 dark:text-gray-300 border border-gray-300 dark:border-gray-800 bg-gray-50 dark:bg-gray-900/50 sticky left-0 z-20 w-[70px] md:w-[100px]">
+                      <td className="p-2 md:p-3 text-xs md:text-sm font-semibold text-gray-800 dark:text-gray-300 border border-gray-300 dark:border-gray-800 bg-gray-50 dark:bg-gray-900 sticky left-0 z-20 w-[70px] md:w-[100px]">
                         {slotLabels[slot]}
                       </td>
                       {weekDays.map((day) => {
                         const mealSlot = getMealForSlot(day.date, slot);
                         const hasComponents = mealSlot && mealSlot.components.length > 0;
                         const isSkipped = mealSlot?.is_skipped || false;
-                        const isToday = day.date === new Date().toISOString().split('T')[0];
+                        const todayString = formatDateLocal(new Date());
+                        const isToday = day.date === todayString;
+                        const isPast = day.date < todayString;
                         
                         return (
                           <td
                             key={`${day.date}-${slot}`}
                             className={`p-2 md:p-3 border border-gray-300 dark:border-gray-800 align-top transition-colors w-[180px] md:w-[220px] ${
-                              isSkipped 
+                              isPast
+                                ? 'bg-gray-100 dark:bg-gray-800/80 opacity-50 cursor-not-allowed'
+                                : isSkipped 
                                 ? 'bg-gray-100 dark:bg-gray-800/50 opacity-60' 
                                 : isToday
                                 ? 'bg-blue-50 dark:bg-blue-900/10'
                                 : 'bg-white dark:bg-gray-900/30'
                             }`}
                           >
-                            {/* Skip checkbox and Remove meal button header */}
-                            <div className="flex items-center justify-between mb-1.5 gap-1">
-                              <label className="flex items-center gap-1.5 cursor-pointer group" title={isSkipped ? "Eating out" : "Skip this meal"}>
-                                <input
-                                  type="checkbox"
-                                  checked={isSkipped}
-                                  onChange={() => handleToggleSkip(day.date, slot)}
-                                  className="w-3.5 h-3.5 rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-1 focus:ring-blue-500"
-                                />
-                                <span className="text-xs text-gray-500 dark:text-gray-400 group-hover:text-gray-700 dark:group-hover:text-gray-300">
-                                  Skip
+                            {/* Past day indicator */}
+                            {isPast ? (
+                              <div className="text-center py-6">
+                                <span className="text-xs text-gray-400 dark:text-gray-600 italic">
+                                  Past
                                 </span>
-                              </label>
-                              {hasComponents && !isSkipped && (
-                                <div className="flex items-center gap-2">
-                                  <button
-                                    onClick={() => handleRegenerateSlot(day.date, slot)}
-                                    className="text-xs text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 transition-colors"
-                                    title="Regenerate this meal with different dishes"
-                                  >
-                                    🔄
-                                  </button>
-                                  <button
-                                    onClick={() => handleRemoveSlot(day.date, slot)}
-                                    className="text-xs text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 transition-colors"
-                                    title="Remove all dishes from this meal"
-                                  >
-                                    🗑️
-                                  </button>
+                              </div>
+                            ) : (
+                              <>
+                                {/* Skip checkbox and Remove meal button header */}
+                                <div className="flex items-center justify-between mb-1.5 gap-1">
+                                  <label className="flex items-center gap-1.5 cursor-pointer group" title={isSkipped ? "Eating out" : "Skip this meal"}>
+                                    <input
+                                      type="checkbox"
+                                      checked={isSkipped}
+                                      onChange={() => handleToggleSkip(day.date, slot)}
+                                      className="w-3.5 h-3.5 rounded border-gray-300 dark:border-gray-600 text-blue-600 focus:ring-1 focus:ring-blue-500"
+                                    />
+                                    <span className="text-xs text-gray-500 dark:text-gray-400 group-hover:text-gray-700 dark:group-hover:text-gray-300">
+                                      Skip
+                                    </span>
+                                  </label>
+                                  {hasComponents && !isSkipped && (
+                                    <div className="flex items-center gap-2">
+                                      <button
+                                        onClick={() => handleRegenerateSlot(day.date, slot)}
+                                        className="text-xs text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 transition-colors"
+                                        title="Regenerate this meal with different dishes"
+                                      >
+                                        🔄
+                                      </button>
+                                      <button
+                                        onClick={() => handleRemoveSlot(day.date, slot)}
+                                        className="text-xs text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 transition-colors"
+                                        title="Remove all dishes from this meal"
+                                      >
+                                        🗑️
+                                      </button>
+                                    </div>
+                                  )}
                                 </div>
-                              )}
-                            </div>
 
-                            {/* Meal content */}
-                            {isSkipped ? (
+                                {/* Meal content */}
+                                {isSkipped ? (
                               <div className="text-center py-3">
                                 <span className="text-sm text-gray-500 dark:text-gray-500 italic">
                                   Skipped
@@ -1132,13 +1199,15 @@ export default function MealPlanPage() {
                                   + Add another dish
                                 </button>
                               </div>
-                            ) : (
-                              <button
-                                onClick={() => handleCellClick(day.date, slot)}
-                                className="w-full text-sm text-gray-500 dark:text-gray-600 hover:text-blue-600 dark:hover:text-blue-400 text-center py-2 hover:bg-gray-50 dark:hover:bg-gray-800/50 rounded transition-colors"
-                              >
-                                + Add meal
-                              </button>
+                                ) : (
+                                  <button
+                                    onClick={() => handleCellClick(day.date, slot)}
+                                    className="w-full text-sm text-gray-500 dark:text-gray-600 hover:text-blue-600 dark:hover:text-blue-400 text-center py-2 hover:bg-gray-50 dark:hover:bg-gray-800/50 rounded transition-colors"
+                                  >
+                                    + Add meal
+                                  </button>
+                                )}
+                              </>
                             )}
                           </td>
                         );
