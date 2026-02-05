@@ -59,6 +59,7 @@ export default function TaskForm({ onSuccess, onError, editTask }: TaskFormProps
       const saveData = {
         ...dbData,
         user_id: user?.id,
+        source: 'web',
       };
 
       if (editTask) {

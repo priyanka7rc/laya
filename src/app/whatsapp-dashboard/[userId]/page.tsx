@@ -236,7 +236,7 @@ export default async function UserDetailPage({
                         </p>
                       )}
                       <p className="text-xs text-gray-500 mt-1">
-                        📁 {task.category}
+                        📁 {task.category || 'Tasks'}
                       </p>
                     </div>
                   ))

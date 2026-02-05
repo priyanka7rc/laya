@@ -550,8 +550,22 @@ export type MealPlateComponentUpdate = Partial<Omit<MealPlateComponentInsert, 'm
 // ============================================================================
 
 export interface MealComponentAI {
-  component_type: ComponentType;
-  dish_name: string;
+  component_type?: ComponentType;
+  dish_name?: string;
+  dish_display_name?: string;
+  dish_canonical_name: string;
+  structural_universe: string;
+  confidence: number;
+  ingredient_count: number;
+  non_pantry_ingredient_count: number;
+  fat_intensity: 'low' | 'medium' | 'high';
+  effort_level: 'easy' | 'medium' | 'high';
+  cooking_method: 'saute' | 'boil' | 'pressure_cook' | 'shallow_fry' | 'other' | 'deep_fry';
+  base_masala_type: 'none' | 'simple_tadka' | 'simple_onion_tomato' | 'complex_paste';
+  cream_based: boolean;
+  nut_paste_based: boolean;
+  frequency_class: 'daily' | 'weekly' | 'occasional';
+  blender_required: boolean;
   dish_id?: string;
   servings?: number;
   quantity_hint?: string;
@@ -562,7 +576,7 @@ export interface MealComponentAI {
 export interface MealSlotAI {
   day: number; // 0-6 (Monday-Sunday)
   slot: 'breakfast' | 'morning_snack' | 'lunch' | 'evening_snack' | 'dinner';
-  meal_anchor: MealAnchor;
+  meal_anchor?: MealAnchor;
   components: MealComponentAI[];
 }
 

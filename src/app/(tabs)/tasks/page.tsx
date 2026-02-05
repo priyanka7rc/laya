@@ -92,6 +92,7 @@ export default function TasksPage() {
         .from('tasks')
         .insert([{
           user_id: user?.id,
+          source: 'web',
           title: quickTitle.trim(),
           due_date: quickDate || null,
           due_time: quickTime || null,

@@ -9,6 +9,11 @@ import { getISTTimestamp } from '@/lib/utils/dateUtils';
 import { batchComposeMeals } from '@/lib/mealComposer';
 import { MEAL_COMPOSITION_RULES } from '@/config/meal-composition';
 import {
+  buildCandidatesByComponentType,
+  normalizeCanonicalName,
+  normalizeMealSlot,
+} from '@/lib/mealPlanAiContract';
+import {
   buildMealSignature,
   buildWeeklyAnchorPlan,
   createMealPolicyState,
@@ -588,10 +593,8 @@ export async function POST(request: NextRequest) {
     allDishes?.forEach(dish => {
       dishLookup.set(dish.id, dish as Dish);
       dishNameMap.set(dish.canonical_name.toLowerCase(), dish.id);
-      dish.aliases?.forEach((alias: string) => {
-        dishNameMap.set(alias.toLowerCase(), dish.id);
-      });
     });
+    const candidatesByComponentType = buildCandidatesByComponentType(allDishes || []);
 
     // Step 3: Merge database-filled slots with AI-generated slots using policy
     console.log(`[${timestamp}] 📋 Step 4: Merging database dishes with AI dishes...`);
@@ -599,6 +602,8 @@ export async function POST(request: NextRequest) {
 
     const allMeals: any[] = [];
     const retrySlots: Array<{ day: number; slot: MealSlot }> = [];
+    const retrySlotKeys = new Set<string>();
+    const usedCanonicals = new Set<string>();
 
     for (let day = 0; day < 7; day++) {
       for (const slot of ['breakfast', 'morning_snack', 'lunch', 'evening_snack', 'dinner'] as MealSlot[]) {
@@ -606,7 +611,17 @@ export async function POST(request: NextRequest) {
         const anchor = anchorPlan.get(slotKey) || MealAnchor.RICE_PLATE;
 
         if (filledSlots.has(slotKey)) {
-          const components = filledSlots.get(slotKey) || [];
+          const components = (filledSlots.get(slotKey) || []).map(component => {
+            if (component.dish_id) {
+              const dish = dishLookup.get(component.dish_id);
+              if (dish?.canonical_name) {
+                const canonical = normalizeCanonicalName(dish.canonical_name);
+                usedCanonicals.add(canonical);
+                return { ...component, dish_canonical_name: canonical };
+              }
+            }
+            return component;
+          });
           const mealSignature = buildMealSignature(slot, anchor, components.map(component => component.dish_id).filter(Boolean));
           if (!policy.usedMealSignatures.has(mealSignature)) {
             policy.usedMealSignatures.add(mealSignature);
@@ -627,8 +642,24 @@ export async function POST(request: NextRequest) {
         const aiMeal = generatedPlan.meals.find((m: any) => m.day === day && m.slot === slot);
         if (!aiMeal) continue;
 
-        if (aiMeal.meal_anchor && aiMeal.meal_anchor !== anchor) {
-          console.log(`[${timestamp}] ⚠️ AI anchor mismatch for ${slotKey}: ${aiMeal.meal_anchor} -> ${anchor}`);
+        const normalized = normalizeMealSlot({
+          day,
+          slot,
+          components: aiMeal.components || [],
+          usedCanonicals,
+          candidatesByComponentType,
+        });
+        aiMeal.components = normalized.components;
+        if (normalized.needsRetry && !retrySlotKeys.has(slotKey)) {
+          retrySlots.push({ day, slot });
+          retrySlotKeys.add(slotKey);
+        }
+        if (aiMeal.components.length === 0) {
+          if (!retrySlotKeys.has(slotKey)) {
+            retrySlots.push({ day, slot });
+            retrySlotKeys.add(slotKey);
+          }
+          continue;
         }
 
         const evaluated = applyPolicyToMealComponents({
@@ -665,9 +696,7 @@ export async function POST(request: NextRequest) {
 
         const minComponents = getMinComponentsForAnchor(slot, anchor);
         if (evaluated.components.length < minComponents) {
-          console.log(`[${timestamp}] ❌ AI meal rejected for ${slotKey} - insufficient components`);
-          retrySlots.push({ day, slot });
-          continue;
+          console.log(`[${timestamp}] ⚠️ AI meal incomplete for ${slotKey} - preserving best effort`);
         }
 
         const mealSignature = buildMealSignature(slot, anchor, evaluated.components.map(component => component.dish_id).filter(Boolean));
@@ -699,6 +728,19 @@ export async function POST(request: NextRequest) {
         const anchor = anchorPlan.get(slotKey) || MealAnchor.RICE_PLATE;
         const retryMeal = retryPlan.meals.find((m: any) => m.day === day && m.slot === slot);
         if (!retryMeal) continue;
+
+        const normalizedRetry = normalizeMealSlot({
+          day,
+          slot,
+          components: retryMeal.components || [],
+          usedCanonicals,
+          candidatesByComponentType,
+        });
+        retryMeal.components = normalizedRetry.components;
+        if (retryMeal.components.length === 0) {
+          console.warn(`[${timestamp}] ⚠️ Retry failed for ${slotKey} - empty components`);
+          continue;
+        }
 
         const evaluated = applyPolicyToMealComponents({
           components: retryMeal.components || [],
@@ -734,8 +776,7 @@ export async function POST(request: NextRequest) {
 
         const minComponents = getMinComponentsForAnchor(slot, anchor);
         if (evaluated.components.length < minComponents) {
-          console.warn(`[${timestamp}] ⚠️ Retry failed for ${slotKey} - insufficient components`);
-          continue;
+          console.warn(`[${timestamp}] ⚠️ Retry incomplete for ${slotKey} - preserving best effort`);
         }
 
         const mealSignature = buildMealSignature(slot, anchor, evaluated.components.map(component => component.dish_id).filter(Boolean));
@@ -885,16 +926,17 @@ export async function POST(request: NextRequest) {
         // Normalize and validate component type to prevent enum errors
         const validatedType = normalizeComponentType(comp.component_type, timestamp);
         
-        const dishNameLower = comp.dish_name.toLowerCase().trim();
-        let matchedDishId = dishNameMap.get(dishNameLower);
+        const canonicalName = normalizeCanonicalName(comp.dish_canonical_name || comp.dish_name);
+        const displayName = comp.dish_display_name || comp.dish_name || canonicalName.replace(/_/g, ' ');
+        let matchedDishId = dishNameMap.get(canonicalName);
 
         // If dish doesn't exist, CREATE it
         if (!matchedDishId) {
-          console.log(`[${timestamp}] 📝 Creating new dish: "${comp.dish_name}"`);
+          console.log(`[${timestamp}] 📝 Creating new dish: "${canonicalName}"`);
           const { data: newDish, error: dishError } = await supabase
             .from('dishes')
             .insert({
-              canonical_name: comp.dish_name,
+              canonical_name: canonicalName,
               cuisine_tags: ['indian'], // Default
             })
             .select('id')
@@ -902,10 +944,10 @@ export async function POST(request: NextRequest) {
 
           if (!dishError && newDish) {
             matchedDishId = newDish.id;
-            dishNameMap.set(dishNameLower, newDish.id); // Add to map for future lookups
+            dishNameMap.set(canonicalName, newDish.id); // Add to map for future lookups
             console.log(`[${timestamp}] ✅ Created dish with ID: ${newDish.id}`);
           } else {
-            console.error(`[${timestamp}] Failed to create dish "${comp.dish_name}":`, dishError);
+            console.error(`[${timestamp}] Failed to create dish "${canonicalName}":`, dishError);
           }
         }
 
@@ -913,7 +955,7 @@ export async function POST(request: NextRequest) {
         components.push({
           meal_plate_id: plateId,
           component_type: validatedType, // Use validated type
-          dish_name: comp.dish_name,
+          dish_name: displayName,
           dish_id: matchedDishId || null,
           sort_order: idx,
           is_optional: comp.is_optional || false,
@@ -1007,8 +1049,8 @@ export async function POST(request: NextRequest) {
     
     for (const meal of generatedPlan.meals) {
       for (const comp of meal.components) {
-        const dishNameLower = comp.dish_name.toLowerCase().trim();
-        const dishId = dishNameMap.get(dishNameLower);
+        const canonicalName = normalizeCanonicalName(comp.dish_canonical_name || comp.dish_name);
+        const dishId = dishNameMap.get(canonicalName);
         
         if (dishId && !dishesNeedingCompilation.find(d => d.id === dishId)) {
           // Check if this dish has a recipe_variant
@@ -1020,7 +1062,7 @@ export async function POST(request: NextRequest) {
             .single();
           
           if (!hasVariant) {
-            dishesNeedingCompilation.push({ id: dishId, name: comp.dish_name });
+            dishesNeedingCompilation.push({ id: dishId, name: comp.dish_display_name || comp.dish_name || canonicalName.replace(/_/g, ' ') });
           }
         }
       }

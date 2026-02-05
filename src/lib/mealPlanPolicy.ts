@@ -295,7 +295,7 @@ export function applyPolicyToMealComponents(options: {
   const logs: any[] = [];
 
   for (const comp of components || []) {
-    const dishName = (comp.dish_name || '').toLowerCase().trim();
+    const dishName = (comp.dish_canonical_name || comp.dish_name || '').toLowerCase().trim();
     if (!dishName) {
       console.log('[Policy] ❌ Rejected component - missing_dish_name');
       rejected.push('missing_dish_name');

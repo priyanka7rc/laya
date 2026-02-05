@@ -7,57 +7,82 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-const MEAL_PLAN_PROMPT = `You are a meal planning assistant specializing in Indian home-style cuisine.
+const MEAL_PLAN_PROMPT = `GOAL:
+Emit structured, homestyle Indian meal plans with complete metadata.
+The API emits measurements and structure; the app enforces rules.
 
-Generate a complete 7-day meal plan for a household of 2 people.
+GLOBAL REQUIREMENTS:
+- Output JSON only.
+- No explanations.
+- No questions.
+- No free text.
 
-Requirements:
-- Each day should have 5 meal slots: breakfast, morning_snack, lunch, evening_snack, dinner
-- Main meals (breakfast, lunch, dinner) should have multiple components (like a traditional Indian thali)
-- Snacks (morning_snack, evening_snack) should be lighter: 1-2 components only
-- Morning snack and evening snack must be different dishes
-- Include variety across the week
-- Do not repeat any dish name within the week
-- Balance vegetarian and non-vegetarian options
-- Focus on comfort food and home-style dishes
-- Each lunch and dinner should have 3-5 components
-- Use Indian/local dish names only (avoid English translations like "pigeon pea dal"; use "toor dal")
-- For lunch/dinner, choose exactly ONE of these two patterns:
-  A) Thali: 1 carb + 1 protein + 1 veg (no extra mains)
-  B) Single-bowl complete meal (e.g., khichdi, biryani, pulao) with at most 1-2 light sides (condiment/dairy/salad/crunch)
-- Never mix pattern A and B in the same meal
-- Do NOT include more than one lentil-based item in the same meal (e.g., dal + rasam + sambar together are NOT allowed)
-- Each breakfast should have 2-3 components
-- Each snack should have 1-2 components (keep it simple and light)
-- Each meal MUST include a "meal_anchor" field and ALL dishes in that meal inherit that anchor
+EVERY dish MUST include:
+- dish_canonical_name (lowercase, snake_case, stable)
+- dish_display_name
+- structural_universe
+- confidence (0.0–1.0)
 
-🚨 CRITICAL: component_type MUST be EXACTLY one of these 12 values (no other values will be accepted):
-1. "carb" - rice, roti, paratha, naan, dosa, idli, upma, bread, pasta
-2. "protein" - dal, rajma, chana, chicken, paneer, egg, fish, tofu
-3. "veg" - any vegetable dish (aloo gobi, bhindi masala, palak, etc.)
-4. "broth" - liquid curries, rasam, sambar, dal fry
-5. "condiment" - chutney, pickle, raita, papad
-6. "dairy" - yogurt, curd, buttermilk, lassi
-7. "salad" - raw vegetables, kachumber, fresh greens
-8. "crunch" - papad, chips, fryums, crispy sides
-9. "snack" - samosa, pakora, namkeen, vada, bonda, mathri
-10. "fruit" - banana, apple, seasonal fruits, fruit chaat
-11. "beverage" - chai, coffee, juice, milkshakes
-12. "other" - anything that doesn't fit above categories
+CANONICAL NAMING RULES:
+- One concept = one canonical.
+- Collapse variants.
+Examples:
+  "mix veg", "mixed veg", "mixed vegetables" → mixed_vegetables
+  "vegetable lemon rice", "lemon rice" → lemon_rice
 
-⚠️ DO NOT USE these values (they are INVALID and will cause errors):
-❌ "grain", "rice", "bread" → use "carb"
-❌ "meat", "lentil", "dal" → use "protein"
-❌ "vegetable", "veggie", "sabzi" → use "veg"
-❌ "soup", "curry", "gravy" → use "broth"
-❌ "drink", "tea", "coffee" → use "beverage"
-❌ "namkeen", "chips" → use "snack"
-❌ "light", "sweet" → use "snack" or "other"
+ALLOWED structural_universe VALUES:
+- rice, roti, dal, dry_veg, gravy_veg, legume_curry,
+  paneer_main, egg_main, breakfast_main,
+  one_bowl_meal, snack, fruit, condiment, beverage, bread
 
-IMPORTANT: 
-- Slot values MUST be: "breakfast", "morning_snack", "lunch", "evening_snack", "dinner"
-- Component types MUST be from the 12 valid values above
-- meal_anchor MUST be one of: "complete_one_bowl", "rice_plate", "roti_plate", "breakfast_plate", "snack"
+REQUIRED METADATA PER DISH:
+- ingredient_count (int)
+- non_pantry_ingredient_count (int)
+- fat_intensity: low | medium | high
+- effort_level: easy | medium | high
+- cooking_method: saute | boil | pressure_cook | shallow_fry | other
+- base_masala_type: none | simple_tadka | simple_onion_tomato | complex_paste
+- cream_based: true | false
+- nut_paste_based: true | false
+- frequency_class: daily | weekly | occasional
+- blender_required: true | false
+
+MEAL STRUCTURE RULES:
+
+DINNER / LUNCH:
+- Must include:
+  - carb (rice OR roti OR one_bowl_meal)
+  - protein (dal / legume / paneer / egg)
+  - veg (dry_veg OR gravy_veg)
+  - condiment
+
+BREAKFAST (STRICT):
+- Never a single dish.
+- Must be main + accompaniment.
+
+Required breakfast pairings:
+- idli / dosa / vada → sambar OR coconut_chutney
+- upma → coconut_chutney OR curd
+- poha → lemon / peanuts / curd
+- egg_omelette / egg_bhurji / paneer_bhurji → bread OR roti
+
+SNACKS:
+- Single item only.
+- No deep fry in weekday mode.
+
+WEEKEND RELAXATION:
+- ingredient_count may be higher
+- fat_intensity = medium allowed
+- frequency_class = weekly/occasional allowed
+
+Still disallowed:
+- deep fry
+- cream or nut-paste gravies
+
+CONFIDENCE GUIDELINES:
+- Obvious homestyle dishes ≥ 0.75
+- Ambiguous 0.5–0.75
+- Unclear < 0.5
 
 Return ONLY valid JSON matching this exact structure:
 {
@@ -65,97 +90,38 @@ Return ONLY valid JSON matching this exact structure:
     {
       "day": 0,
       "slot": "breakfast",
-      "meal_anchor": "breakfast_plate",
       "components": [
         {
-          "component_type": "carb",
-          "dish_name": "poha",
-          "is_optional": false
+          "dish_canonical_name": "idli",
+          "dish_display_name": "Idli",
+          "structural_universe": "breakfast_main",
+          "confidence": 0.9,
+          "ingredient_count": 6,
+          "non_pantry_ingredient_count": 2,
+          "fat_intensity": "low",
+          "effort_level": "easy",
+          "cooking_method": "boil",
+          "base_masala_type": "none",
+          "cream_based": false,
+          "nut_paste_based": false,
+          "frequency_class": "daily",
+          "blender_required": false
         },
         {
-          "component_type": "condiment",
-          "dish_name": "coconut chutney",
-          "is_optional": true
-        }
-      ]
-    },
-    {
-      "day": 0,
-      "slot": "morning_snack",
-      "meal_anchor": "snack",
-      "components": [
-        {
-          "component_type": "snack",
-          "dish_name": "samosa",
-          "is_optional": false
-        },
-        {
-          "component_type": "beverage",
-          "dish_name": "chai",
-          "is_optional": true
-        }
-      ]
-    },
-    {
-      "day": 0,
-      "slot": "lunch",
-      "meal_anchor": "rice_plate",
-      "components": [
-        {
-          "component_type": "protein",
-          "dish_name": "dal tadka"
-        },
-        {
-          "component_type": "carb",
-          "dish_name": "jeera rice"
-        },
-        {
-          "component_type": "veg",
-          "dish_name": "aloo gobi"
-        },
-        {
-          "component_type": "condiment",
-          "dish_name": "raita",
-          "is_optional": true
-        }
-      ]
-    },
-    {
-      "day": 0,
-      "slot": "evening_snack",
-      "meal_anchor": "snack",
-      "components": [
-        {
-          "component_type": "snack",
-          "dish_name": "pakora",
-          "is_optional": false
-        },
-        {
-          "component_type": "beverage",
-          "dish_name": "chai",
-          "is_optional": true
-        }
-      ]
-    },
-    {
-      "day": 0,
-      "slot": "dinner",
-      "meal_anchor": "roti_plate",
-      "components": [
-        {
-          "component_type": "carb",
-          "dish_name": "roti",
-          "is_optional": false
-        },
-        {
-          "component_type": "protein",
-          "dish_name": "rajma",
-          "is_optional": false
-        },
-        {
-          "component_type": "veg",
-          "dish_name": "bhindi masala",
-          "is_optional": false
+          "dish_canonical_name": "coconut_chutney",
+          "dish_display_name": "Coconut chutney",
+          "structural_universe": "condiment",
+          "confidence": 0.85,
+          "ingredient_count": 5,
+          "non_pantry_ingredient_count": 2,
+          "fat_intensity": "low",
+          "effort_level": "easy",
+          "cooking_method": "other",
+          "base_masala_type": "none",
+          "cream_based": false,
+          "nut_paste_based": false,
+          "frequency_class": "daily",
+          "blender_required": true
         }
       ]
     }
@@ -165,17 +131,7 @@ Return ONLY valid JSON matching this exact structure:
 Rules:
 - day: 0=Monday through 6=Sunday
 - slot: MUST be one of: "breakfast", "morning_snack", "lunch", "evening_snack", "dinner"
-- Breakfast: 2-3 components (simpler meals)
-- Morning Snack: 1-2 components (light snack)
-- Lunch: 3-5 components (full thali-style meals)
-- Evening Snack: 1-2 components (light snack)
-- Dinner: 3-5 components (full thali-style meals)
-- Lunch/Dinner mains must be either (carb+protein+veg) OR one complete meal. Do not include more than one "complete meal" in the same slot.
-- Include variety - don't repeat dishes too often
-- Mark condiments/sides as is_optional: true
-- Use common Indian dish names in lowercase
-
-Generate plan for all 7 days, 5 meals per day (35 total meals including snacks).`;
+- Generate plan for all 7 days, 5 meals per day (35 total meals including snacks).`;
 
 /**
  * Generates a weekly meal plan using OpenAI
@@ -193,14 +149,13 @@ export async function generateWeeklyMealPlanAI(
   
   try {
     let userPrompt = 'Generate a weekly meal plan.';
-    userPrompt += ' Avoid novelty dishes and keep overlap under 25% versus recent dishes.';
     
     if (preferences?.dietary_restrictions) {
       userPrompt += ` Dietary restrictions: ${preferences.dietary_restrictions.join(', ')}.`;
     }
     
     if (excludeDishes && excludeDishes.length > 0) {
-      userPrompt += ` IMPORTANT: Do NOT include these dishes (user has already used them this week): ${excludeDishes.join(', ')}. Suggest different dishes for variety.`;
+      userPrompt += ` IMPORTANT: Do NOT include these dish_canonical_name values: ${excludeDishes.join(', ')}.`;
     }
 
     const response = await openai.chat.completions.create({
@@ -225,17 +180,39 @@ export async function generateWeeklyMealPlanAI(
       throw new Error('Invalid meal plan structure');
     }
 
-    const allowedAnchors = new Set([
-      'complete_one_bowl',
-      'rice_plate',
-      'roti_plate',
-      'breakfast_plate',
+    const allowedUniverses = new Set([
+      'rice',
+      'roti',
+      'dal',
+      'dry_veg',
+      'gravy_veg',
+      'legume_curry',
+      'paneer_main',
+      'egg_main',
+      'breakfast_main',
+      'one_bowl_meal',
       'snack',
+      'fruit',
+      'condiment',
+      'beverage',
+      'bread',
     ]);
+
     parsed.meals.forEach(meal => {
-      if (!meal.meal_anchor || !allowedAnchors.has(meal.meal_anchor)) {
-        throw new Error(`Invalid or missing meal_anchor for ${meal.slot} on day ${meal.day}`);
+      if (!meal.components || !Array.isArray(meal.components)) {
+        throw new Error(`Missing components for ${meal.slot} on day ${meal.day}`);
       }
+      meal.components.forEach(component => {
+        if (!component.dish_canonical_name || !component.dish_display_name) {
+          throw new Error(`Missing dish names for ${meal.slot} on day ${meal.day}`);
+        }
+        if (!component.structural_universe || !allowedUniverses.has(component.structural_universe)) {
+          throw new Error(`Invalid structural_universe for ${component.dish_canonical_name}`);
+        }
+        if (typeof component.confidence !== 'number') {
+          throw new Error(`Missing confidence for ${component.dish_canonical_name}`);
+        }
+      });
     });
 
     const latencyMs = Date.now() - startTime;
@@ -273,43 +250,68 @@ export async function generateWeeklyMealPlanAI(
  * Fallback: Generate a simple rule-based meal plan
  */
 export function generateWeeklyMealPlanRuleBased(): WeeklyMealPlanAI {
+  const makeDish = (options: {
+    canonical: string;
+    display: string;
+    universe: string;
+    confidence?: number;
+  }): MealComponentAI => ({
+    dish_canonical_name: options.canonical,
+    dish_display_name: options.display,
+    structural_universe: options.universe,
+    confidence: options.confidence ?? 0.85,
+    ingredient_count: 6,
+    non_pantry_ingredient_count: 2,
+    fat_intensity: 'low',
+    effort_level: 'easy',
+    cooking_method: 'other',
+    base_masala_type: 'none',
+    cream_based: false,
+    nut_paste_based: false,
+    frequency_class: 'daily',
+    blender_required: false,
+  });
+
   const breakfastOptions = [
-    [{ component_type: 'carb' as const, dish_name: 'poha' }],
-    [{ component_type: 'carb' as const, dish_name: 'upma' }],
-    [{ component_type: 'carb' as const, dish_name: 'idli' }, { component_type: 'condiment' as const, dish_name: 'coconut chutney', is_optional: true }],
-    [{ component_type: 'carb' as const, dish_name: 'dosa' }, { component_type: 'condiment' as const, dish_name: 'sambar', is_optional: true }],
-    [{ component_type: 'carb' as const, dish_name: 'paratha' }],
+    [makeDish({ canonical: 'poha', display: 'Poha', universe: 'breakfast_main' }), makeDish({ canonical: 'curd', display: 'Curd', universe: 'condiment' })],
+    [makeDish({ canonical: 'upma', display: 'Upma', universe: 'breakfast_main' }), makeDish({ canonical: 'coconut_chutney', display: 'Coconut chutney', universe: 'condiment' })],
+    [makeDish({ canonical: 'idli', display: 'Idli', universe: 'breakfast_main' }), makeDish({ canonical: 'coconut_chutney', display: 'Coconut chutney', universe: 'condiment' })],
+    [makeDish({ canonical: 'dosa', display: 'Dosa', universe: 'breakfast_main' }), makeDish({ canonical: 'sambar', display: 'Sambar', universe: 'condiment' })],
+    [makeDish({ canonical: 'paratha', display: 'Paratha', universe: 'breakfast_main' }), makeDish({ canonical: 'curd', display: 'Curd', universe: 'condiment' })],
   ];
 
   const snackOptions = [
-    [{ component_type: 'snack' as const, dish_name: 'samosa' }],
-    [{ component_type: 'fruit' as const, dish_name: 'banana' }],
-    [{ component_type: 'beverage' as const, dish_name: 'chai' }],
-    [{ component_type: 'snack' as const, dish_name: 'pakora' }],
-    [{ component_type: 'snack' as const, dish_name: 'namkeen' }],
+    [makeDish({ canonical: 'samosa', display: 'Samosa', universe: 'snack' })],
+    [makeDish({ canonical: 'banana', display: 'Banana', universe: 'fruit' })],
+    [makeDish({ canonical: 'chai', display: 'Chai', universe: 'beverage' })],
+    [makeDish({ canonical: 'pakora', display: 'Pakora', universe: 'snack' })],
+    [makeDish({ canonical: 'namkeen', display: 'Namkeen', universe: 'snack' })],
   ];
 
   const lunchDinnerOptions = [
     [
-      { component_type: 'protein' as const, dish_name: 'dal tadka' },
-      { component_type: 'carb' as const, dish_name: 'jeera rice' },
-      { component_type: 'veg' as const, dish_name: 'aloo gobi' },
-      { component_type: 'condiment' as const, dish_name: 'raita', is_optional: true },
+      makeDish({ canonical: 'dal_tadka', display: 'Dal tadka', universe: 'dal' }),
+      makeDish({ canonical: 'jeera_rice', display: 'Jeera rice', universe: 'rice' }),
+      makeDish({ canonical: 'aloo_gobi', display: 'Aloo gobi', universe: 'dry_veg' }),
+      makeDish({ canonical: 'raita', display: 'Raita', universe: 'condiment' }),
     ],
     [
-      { component_type: 'protein' as const, dish_name: 'chana masala' },
-      { component_type: 'carb' as const, dish_name: 'roti' },
-      { component_type: 'veg' as const, dish_name: 'bhindi masala' },
+      makeDish({ canonical: 'chana_masala', display: 'Chana masala', universe: 'legume_curry' }),
+      makeDish({ canonical: 'roti', display: 'Roti', universe: 'roti' }),
+      makeDish({ canonical: 'bhindi_masala', display: 'Bhindi masala', universe: 'dry_veg' }),
+      makeDish({ canonical: 'chutney', display: 'Chutney', universe: 'condiment' }),
     ],
     [
-      { component_type: 'protein' as const, dish_name: 'rajma' },
-      { component_type: 'carb' as const, dish_name: 'steamed rice' },
-      { component_type: 'salad' as const, dish_name: 'salad', is_optional: true },
+      makeDish({ canonical: 'rajma', display: 'Rajma', universe: 'legume_curry' }),
+      makeDish({ canonical: 'steamed_rice', display: 'Steamed rice', universe: 'rice' }),
+      makeDish({ canonical: 'salad', display: 'Salad', universe: 'condiment' }),
+      makeDish({ canonical: 'pickle', display: 'Pickle', universe: 'condiment' }),
     ],
     [
-      { component_type: 'protein' as const, dish_name: 'palak paneer' },
-      { component_type: 'carb' as const, dish_name: 'naan' },
-      { component_type: 'dairy' as const, dish_name: 'curd', is_optional: true },
+      makeDish({ canonical: 'palak_paneer', display: 'Palak paneer', universe: 'paneer_main' }),
+      makeDish({ canonical: 'naan', display: 'Naan', universe: 'roti' }),
+      makeDish({ canonical: 'curd', display: 'Curd', universe: 'condiment' }),
+      makeDish({ canonical: 'salad', display: 'Salad', universe: 'condiment' }),
     ],
   ];
 
@@ -320,14 +322,12 @@ export function generateWeeklyMealPlanRuleBased(): WeeklyMealPlanAI {
     meals.push({
       day,
       slot: 'breakfast',
-      meal_anchor: 'breakfast_plate',
       components: breakfastOptions[day % breakfastOptions.length],
     });
 
     meals.push({
       day,
       slot: 'morning_snack',
-      meal_anchor: 'snack',
       components: snackOptions[day % snackOptions.length],
     });
 
@@ -335,14 +335,12 @@ export function generateWeeklyMealPlanRuleBased(): WeeklyMealPlanAI {
     meals.push({
       day,
       slot: 'lunch',
-      meal_anchor: day % 2 === 0 ? 'rice_plate' : 'roti_plate',
       components: lunchDinnerOptions[day % lunchDinnerOptions.length],
     });
 
     meals.push({
       day,
       slot: 'evening_snack',
-      meal_anchor: 'snack',
       components: snackOptions[(day + 2) % snackOptions.length],
     });
 
@@ -350,7 +348,6 @@ export function generateWeeklyMealPlanRuleBased(): WeeklyMealPlanAI {
     meals.push({
       day,
       slot: 'dinner',
-      meal_anchor: day % 2 === 0 ? 'roti_plate' : 'rice_plate',
       components: lunchDinnerOptions[(day + 1) % lunchDinnerOptions.length],
     });
   }

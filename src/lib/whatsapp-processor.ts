@@ -53,10 +53,22 @@ export async function processWhatsAppMessage(message: IncomingMessage): Promise<
   try {
     console.log(`📨 Processing message from ${message.phoneNumber}`);
 
-    // 1. Get or create user
+    // 1. Get or create user (returns auth_user_id or null)
     const userId = await getOrCreateUser(message.phoneNumber);
     if (!userId) {
-      throw new Error('Failed to get/create user');
+      // User requires account linking
+      console.log(`🔗 Sending linking instructions to ${message.phoneNumber}`);
+      await sendWhatsAppMessage(
+        message.phoneNumber,
+        "👋 Welcome to Laya!\n\n" +
+        "To get started, please link your account:\n\n" +
+        "1. Visit your web app\n" +
+        "2. Sign in or create an account\n" +
+        "3. Go to Settings → Link WhatsApp\n" +
+        "4. Enter this phone number\n\n" +
+        "Then message me again and I'll be ready to help! 🌿"
+      );
+      return; // Exit early, don't process message
     }
 
     // 2. Get final text content (transcribe audio if needed)
@@ -141,43 +153,47 @@ export async function processWhatsAppMessage(message: IncomingMessage): Promise<
 
 /**
  * Get or create WhatsApp user by phone number
+ * Returns auth_user_id if linked, null if linking required
  */
 async function getOrCreateUser(phoneNumber: string): Promise<string | null> {
   try {
-    // Check if phone number exists
-    const { data: existingUser } = await supabase
+    // Look up whatsapp_users record
+    const { data: whatsappUser } = await supabase
       .from('whatsapp_users')
-      .select('id')
+      .select('id, auth_user_id')
       .eq('phone_number', phoneNumber)
-      .single();
+      .maybeSingle();
 
-    if (existingUser) {
-      // Update last_active timestamp
-      await supabase
+    // If user doesn't exist, create whatsapp_users record (unlinked)
+    if (!whatsappUser) {
+      const { data: newUser, error } = await supabase
         .from('whatsapp_users')
-        .update({ last_active: new Date().toISOString() })
-        .eq('id', existingUser.id);
-      
-      return existingUser.id;
+        .insert({ phone_number: phoneNumber })
+        .select('id, auth_user_id')
+        .single();
+
+      if (error) {
+        console.error('Error creating WhatsApp user:', error);
+        return null;
+      }
+
+      console.log(`📱 Created new unlinked WhatsApp user: ${phoneNumber}`);
+      return null; // Requires linking
     }
 
-    // Create new WhatsApp user
-    const { data: newUser, error } = await supabase
-      .from('whatsapp_users')
-      .insert({
-        phone_number: phoneNumber,
-        last_active: new Date().toISOString(),
-      })
-      .select('id')
-      .single();
-
-    if (error) {
-      console.error('Error creating WhatsApp user:', error);
+    // If user exists but NOT linked, return null
+    if (!whatsappUser.auth_user_id) {
+      console.log(`⚠️ WhatsApp user ${phoneNumber} requires linking`);
       return null;
     }
 
-    console.log(`✅ Created new WhatsApp user: ${phoneNumber}`);
-    return newUser.id;
+    // Update last_active and return auth_user_id
+    await supabase
+      .from('whatsapp_users')
+      .update({ last_active: new Date().toISOString() })
+      .eq('id', whatsappUser.id);
+
+    return whatsappUser.auth_user_id; // ✅ Returns auth.users.id
   } catch (error) {
     console.error('Error in getOrCreateUser:', error);
     return null;
@@ -327,6 +343,7 @@ async function saveStructuredData(
     if (structured.tasks && structured.tasks.length > 0) {
       const tasksToInsert = structured.tasks.map((task) => ({
         user_id: userId,
+        source: 'whatsapp',
         source_message_id: sourceMessageId,
         title: task.title,
         due_date: task.due_date,

@@ -6,6 +6,11 @@ import { ComponentType, MealSlot, MealAnchor, DishEffortLevel, Dish, MealPolicyL
 import { getISTTimestamp } from '@/lib/utils/dateUtils';
 import { composeMealFromDatabase } from '@/lib/mealComposer';
 import {
+  buildCandidatesByComponentType,
+  normalizeCanonicalName,
+  normalizeMealSlot,
+} from '@/lib/mealPlanAiContract';
+import {
   applyPolicyToMealComponents,
   buildMealSignature,
   buildWeeklyAnchorPlan,
@@ -491,10 +496,8 @@ export async function POST(request: NextRequest) {
     allDishes?.forEach(dish => {
       dishLookup.set(dish.id, dish as Dish);
       dishNameMap.set(dish.canonical_name.toLowerCase(), dish.id);
-      dish.aliases?.forEach((alias: string) => {
-        dishNameMap.set(alias.toLowerCase(), dish.id);
-      });
     });
+    const candidatesByComponentType = buildCandidatesByComponentType(allDishes || []);
 
     // Seed policy with existing plan items (excluding current slot)
     planItems?.forEach((item: any) => {
@@ -563,6 +566,8 @@ export async function POST(request: NextRequest) {
         meal_anchor: anchor,
         components: composedDishes.map((entry: any, idx: number) => ({
           dish_id: entry.dish.id,
+          dish_canonical_name: entry.dish.canonical_name,
+          dish_display_name: entry.dish.canonical_name,
           dish_name: entry.dish.canonical_name,
           component_type: entry.componentType || entry.dish.primary_component_type || ComponentType.OTHER,
           is_optional: idx >= 2,
@@ -589,7 +594,38 @@ export async function POST(request: NextRequest) {
       if (!targetMeal || !targetMeal.components || targetMeal.components.length === 0) {
         return NextResponse.json({ error: 'Failed to generate meal' }, { status: 500 });
       }
-      
+
+      let normalized = normalizeMealSlot({
+        day: dayOfWeek,
+        slot: slot as MealSlot,
+        components: targetMeal.components || [],
+        usedCanonicals: new Set(),
+        candidatesByComponentType,
+      });
+      targetMeal.components = normalized.components;
+
+      if ((normalized.needsRetry || targetMeal.components.length === 0)) {
+        console.log(`[${timestamp}] 🔁 Re-trying AI due to low confidence or empty slot...`);
+        const retryPlan = await generateWeeklyMealPlan(userId, aiExcludeDishes);
+        const retryMeal = retryPlan.meals.find((m: any) => m.day === dayOfWeek && m.slot === slot);
+        if (!retryMeal || !retryMeal.components || retryMeal.components.length === 0) {
+          return NextResponse.json({ error: 'Failed to generate meal' }, { status: 500 });
+        }
+        normalized = normalizeMealSlot({
+          day: dayOfWeek,
+          slot: slot as MealSlot,
+          components: retryMeal.components || [],
+          usedCanonicals: new Set(),
+          candidatesByComponentType,
+        });
+        retryMeal.components = normalized.components;
+        targetMeal = retryMeal;
+      }
+
+      if (!targetMeal.components || targetMeal.components.length === 0) {
+        return NextResponse.json({ error: 'Failed to generate meal' }, { status: 500 });
+      }
+
       console.log(`[${timestamp}] ✅ AI generated ${targetMeal.components.length} components for ${slot}\n`);
     }
 
@@ -723,18 +759,19 @@ export async function POST(request: NextRequest) {
     let sortOrder = 0;
 
     for (const component of targetMeal.components) {
-      const dishName = component.dish_name.toLowerCase().trim();
-      let dish_id = dishNameMap.get(dishName);
+      const canonicalName = normalizeCanonicalName(component.dish_canonical_name || component.dish_name);
+      const displayName = component.dish_display_name || component.dish_name || canonicalName.replace(/_/g, ' ');
+      let dish_id = dishNameMap.get(canonicalName);
 
       // If dish doesn't exist, compile it
       if (!dish_id) {
-        console.log(`[${timestamp}] 🔨 Compiling new dish: ${component.dish_name}`);
+        console.log(`[${timestamp}] 🔨 Compiling new dish: ${canonicalName}`);
         
         // Create dish first
         const { data: newDish, error: dishError } = await supabase
           .from('dishes')
           .insert({
-            canonical_name: component.dish_name,
+            canonical_name: canonicalName,
             cuisine_tags: ['indian'], // Default
           })
           .select('id')
@@ -742,13 +779,13 @@ export async function POST(request: NextRequest) {
         
         if (!dishError && newDish) {
           dish_id = newDish.id;
-          dishNameMap.set(dishName, dish_id);
+          dishNameMap.set(canonicalName, dish_id);
           
           // Compile the dish
           try {
-            await compileDish(newDish.id, component.dish_name, userId, true);
+            await compileDish(newDish.id, displayName, userId, true);
           } catch (compileError) {
-            console.error(`[${timestamp}] Failed to compile ${component.dish_name}:`, compileError);
+            console.error(`[${timestamp}] Failed to compile ${displayName}:`, compileError);
           }
         }
       }
@@ -765,7 +802,7 @@ export async function POST(request: NextRequest) {
         componentsToInsert.push({
           meal_plate_id,
           component_type: validatedType,
-          dish_name: component.dish_name,
+          dish_name: displayName,
           dish_id: dish_id || null,
           sort_order: sortOrder++,
           is_optional: component.is_optional || false,

@@ -132,6 +132,7 @@ export default function FloatingBrainDump() {
           tasks.map((task: any) => ({
             ...task,
             user_id: user.id,
+            source: 'web',
             is_done: false,
           }))
         );
