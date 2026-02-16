@@ -366,16 +366,40 @@ function extractDateFromText(text: string): string | null {
 function guessCategory(text: string): string | null {
   const lower = text.toLowerCase();
 
-  if (lower.match(/\b(groceries|grocery|food|cook|meal|dinner|lunch|breakfast|eat)\b/)) return 'Meals';
-  if (lower.match(/\b(gym|workout|exercise|run|jog|fitness|yoga|sport)\b/)) return 'Fitness';
-  if (lower.match(/\b(work|project|meeting|deadline|client|email|presentation)\b/)) return 'Work';
-  if (lower.match(/\b(call|text|mom|dad|family|friend|visit|birthday)\b/)) return 'Personal';
+  // Groceries and food purchases → Shopping (not Meals)
+  if (lower.match(/\b(groceries|grocery|milk|vegetables|fruits)\b/)) return 'Shopping';
   if (lower.match(/\b(shop|buy|purchase|order|get|pick up)\b/)) return 'Shopping';
+  
+  // Meals / cooking
+  if (lower.match(/\b(cook|meal|dinner|lunch|breakfast|eat|recipe)\b/)) return 'Meals';
+  
+  // Bills and subscriptions
+  if (lower.match(/\b(pay|bill|payment|renew|renewal|insurance|subscription)\b/)) return 'Bills';
+  
+  // Admin / scheduling
+  if (lower.match(/\b(book|schedule|appointment|reserve)\b/)) return 'Admin';
+  
+  // Health actions
+  if (lower.match(/\b(take|vitamin|pill|supplement|medication)\b/)) return 'Health';
+  if (lower.match(/\b(doctor|dentist|checkup|medicine)\b/)) return 'Health';
+  
+  // Work
+  if (lower.match(/\b(submit|file|report|document|paperwork|expense)\b/)) return 'Work';
+  if (lower.match(/\b(work|project|meeting|deadline|client|email|presentation)\b/)) return 'Work';
+  
+  // Personal / social
+  if (lower.match(/\b(call|text|mom|dad|family|friend|visit|birthday)\b/)) return 'Personal';
+  
+  // Fitness
+  if (lower.match(/\b(gym|workout|exercise|run|jog|fitness|yoga|sport)\b/)) return 'Fitness';
+  
+  // Learning
   if (lower.match(/\b(study|learn|read|course|book|homework)\b/)) return 'Learning';
-  if (lower.match(/\b(doctor|dentist|appointment|checkup|medicine)\b/)) return 'Health';
+  
+  // Home
   if (lower.match(/\b(clean|laundry|dishes|vacuum|organize)\b/)) return 'Home';
 
-  return 'Brain Dump';
+  return 'Tasks';
 }
 
 function getTodayDate(): string {

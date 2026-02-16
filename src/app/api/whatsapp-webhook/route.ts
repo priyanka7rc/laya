@@ -89,7 +89,10 @@ export async function POST(request: NextRequest) {
       // Extract message data
       const phoneNumber = payload.source || payload.sender?.phone;
       const messageId = payload.id || `gupshup-${Date.now()}`;
-      const timestamp = payload.timestamp || new Date().toISOString();
+      // Gupshup sends UNIX timestamp (milliseconds) at top level, convert to ISO string
+      const timestamp = body.timestamp 
+        ? new Date(body.timestamp).toISOString() 
+        : new Date().toISOString();
       const messageType = payload.type;
 
       if (!phoneNumber) {
@@ -102,9 +105,10 @@ export async function POST(request: NextRequest) {
       let replyToMessage: string | null = null;
 
       // Extract reply context if present
-      if (payload.context && payload.context.message) {
-        replyToMessage = payload.context.message;
-        console.log(`↩️ Reply detected: "${replyToMessage}"`);
+      // Note: Gupshup context only provides message IDs (id, gsId), not message text
+      if (payload.context && payload.context.gsId) {
+        console.log(`↩️ Reply to message ID: ${payload.context.gsId}`);
+        // Future: Query whatsapp_messages table using payload.context.gsId to get original text
       }
 
       // Extract content based on message type

@@ -60,7 +60,7 @@ export default function FloatingBrainDump() {
           console.error('Speech recognition error:', event.error);
           setIsListening(false);
           if (event.error !== 'aborted' && event.error !== 'no-speech') {
-            setToast("Couldn't hear that. Try again?");
+            setToast("That didn't work — want to try again?");
           }
         };
 
@@ -134,6 +134,7 @@ export default function FloatingBrainDump() {
             user_id: user.id,
             source: 'web',
             is_done: false,
+            reminder_sent: false,
           }))
         );
   
@@ -160,7 +161,7 @@ export default function FloatingBrainDump() {
       }, 100);
     } catch (error: any) {
       console.error('Error saving brain dump:', error);
-      setToast("Couldn't save. Check your connection?");
+      setToast("That didn't work — want to try again?");
     } finally {
       setLoading(false);
     }

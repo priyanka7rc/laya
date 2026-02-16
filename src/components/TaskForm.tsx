@@ -60,6 +60,7 @@ export default function TaskForm({ onSuccess, onError, editTask }: TaskFormProps
         ...dbData,
         user_id: user?.id,
         source: 'web',
+        reminder_sent: false,
       };
 
       if (editTask) {
@@ -90,9 +91,9 @@ export default function TaskForm({ onSuccess, onError, editTask }: TaskFormProps
       console.error('Error saving task:', error);
       
       if (onError) {
-        onError(error.message || "Couldn't save. Check your connection?");
+        onError("That didn't work — want to try again?");
       } else {
-        alert("Couldn't save: " + error.message);
+        alert("That didn't work — want to try again?");
       }
     } finally {
       setLoading(false);

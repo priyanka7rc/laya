@@ -80,6 +80,12 @@ export async function sendWhatsAppMessage(
   phoneNumber: string,
   message: string
 ): Promise<string | null> {
+  // Feature flag check
+  if (process.env.WHATSAPP_ENABLED !== 'true') {
+    console.log('[WA] Outbound blocked by feature flag | type=free-form');
+    return null;
+  }
+
   const apiKey = process.env.GUPSHUP_API_KEY;
   const sourceNumber = process.env.GUPSHUP_SOURCE_NUMBER;
 
@@ -137,6 +143,217 @@ export async function sendWhatsAppMessage(
 }
 
 // ============================================
+// SESSION-AWARE MESSAGE ROUTER
+// ============================================
+
+/**
+ * Smart message router that decides between free-form and template based on 24-hour window
+ * 
+ * Rules:
+ * - If last inbound message from user is within 24 hours → use free-form message
+ * - If outside 24 hours → use template message
+ * - Checks opt-out status before sending
+ * 
+ * @param options - Routing options
+ * @param options.phoneNumber - Recipient's phone number
+ * @param options.userId - WhatsApp user ID (for session window check)
+ * @param options.message - Free-form message text (used if within 24h window)
+ * @param options.templateId - Template ID (used if outside 24h window)
+ * @param options.templateParams - Template parameters (used if outside 24h window)
+ * @returns Message ID if successful, null if blocked or failed
+ * 
+ * Example:
+ * await sendWhatsAppMessageWithFallback({
+ *   phoneNumber: "919876543210",
+ *   userId: "user-uuid",
+ *   message: "Your task reminder: Buy milk",
+ *   templateId: "reminder_template_id",
+ *   templateParams: ["Buy milk", "Today at 5pm"]
+ * });
+ */
+export async function sendWhatsAppMessageWithFallback(options: {
+  phoneNumber: string;
+  userId: string;
+  message: string;
+  templateId?: string;
+  templateParams?: string[];
+}): Promise<string | null> {
+  const { phoneNumber, userId, message, templateId, templateParams } = options;
+
+  // Feature flag check
+  if (process.env.WHATSAPP_ENABLED !== 'true') {
+    console.log('[WA] Outbound blocked by feature flag | type=fallback');
+    return null;
+  }
+
+  try {
+    // SAFETY ASSERTION 1: Check opt-out status
+    const { data: whatsappUser } = await supabase
+      .from('whatsapp_users')
+      .select('opted_out')
+      .eq('phone_number', phoneNumber)
+      .maybeSingle();
+    
+    if (whatsappUser?.opted_out) {
+      console.log(
+        `[WA] Safety: BLOCKED proactive message | ` +
+        `phone=${phoneNumber} | reason=opted_out`
+      );
+      return null;
+    }
+
+    // SAFETY ASSERTION 2: Check 24-hour session window
+    const withinWindow = await canSendFreeformMessage(userId);
+
+    if (withinWindow) {
+      // Within 24 hours - use free-form message
+      console.log(
+        `[WA] Safety: ALLOW free-form | userId=${userId} | ` +
+        `reason=within_24h_window`
+      );
+      return await sendWhatsAppMessage(phoneNumber, message);
+    } else {
+      // Outside 24 hours - require template
+      if (!templateId) {
+        console.log(
+          `[WA] Safety: BLOCKED free-form | userId=${userId} | ` +
+          `reason=outside_24h_window_no_template`
+        );
+        return null;
+      }
+      console.log(
+        `[WA] Safety: ALLOW template | userId=${userId} | ` +
+        `reason=outside_24h_window_has_template`
+      );
+      return await sendGupshupTemplate(phoneNumber, templateId, templateParams || []);
+    }
+  } catch (error) {
+    console.error('[WA] Safety: ERROR in message router:', error);
+    return null;
+  }
+}
+
+// ============================================
+// SEND TEMPLATE MESSAGE (GUPSHUP)
+// ============================================
+
+/**
+ * Send a template message via Gupshup
+ * Templates must be pre-approved in Gupshup dashboard
+ * 
+ * @param phoneNumber - Recipient's phone number (with country code, no +)
+ * @param templateId - Template ID from Gupshup dashboard (e.g., "c6aecef6-bcb0-4fb1-8100-28c094e3bc6b")
+ * @param params - Array of variable values (order must match template placeholders)
+ * @returns Message ID if successful
+ * 
+ * Example:
+ * await sendGupshupTemplate(
+ *   "919876543210",
+ *   "reminder_template_id",
+ *   ["Buy milk", "Today at 5pm"]
+ * );
+ */
+export async function sendGupshupTemplate(
+  phoneNumber: string,
+  templateId: string,
+  params: string[] = []
+): Promise<string | null> {
+  // Feature flag check
+  if (process.env.WHATSAPP_ENABLED !== 'true') {
+    console.log('[WA] Outbound blocked by feature flag | type=template');
+    return null;
+  }
+
+  const apiKey = process.env.GUPSHUP_API_KEY;
+  const sourceNumber = process.env.GUPSHUP_SOURCE_NUMBER;
+
+  // For local testing without Gupshup credentials
+  if (!apiKey || !sourceNumber) {
+    console.log('📤 [STUB] Would send Gupshup template:');
+    console.log(`   To: ${phoneNumber}`);
+    console.log(`   Template ID: ${templateId}`);
+    console.log(`   Params: ${JSON.stringify(params)}`);
+    console.log('   (Add GUPSHUP_API_KEY and GUPSHUP_SOURCE_NUMBER to .env.local to enable real sending)');
+    return 'stub-template-message-id';
+  }
+
+  try {
+    // SAFETY ASSERTION: Check if user has opted out
+    const { data: whatsappUser } = await supabase
+      .from('whatsapp_users')
+      .select('opted_out')
+      .eq('phone_number', phoneNumber)
+      .maybeSingle();
+    
+    if (whatsappUser?.opted_out) {
+      console.log(
+        `[WA] Safety: BLOCKED template | ` +
+        `phone=${phoneNumber} | reason=opted_out`
+      );
+      return null;
+    }
+
+    // Clean phone number (remove +, spaces, dashes)
+    const cleanPhone = phoneNumber.replace(/[^\d]/g, '');
+
+    // Construct template object
+    const templatePayload = {
+      id: templateId,
+      params: params,
+    };
+
+    const response = await fetch(
+      `${GUPSHUP_API_BASE}/template/msg`,
+      {
+        method: 'POST',
+        headers: {
+          'apikey': apiKey,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({
+          source: sourceNumber,
+          destination: cleanPhone,
+          template: JSON.stringify(templatePayload),
+        }),
+      }
+    );
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      console.error('❌ Gupshup template API error:', errorData);
+      throw new Error(`Gupshup template API error: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    console.log('✅ Template message sent via Gupshup:', {
+      templateId,
+      messageId: data.messageId || data,
+      params,
+    });
+    return data.messageId || 'gupshup-template-sent';
+  } catch (error) {
+    console.error('❌ Error sending Gupshup template:', error);
+    return null;
+  }
+}
+
+// ============================================
+// UNUSED META CLOUD API FUNCTIONS
+// ============================================
+// NOTE: These functions are commented out because:
+// 1. They use Meta Cloud API (not Gupshup, which is our current provider)
+// 2. They reference undefined constant WHATSAPP_API_BASE
+// 3. They are never called anywhere in the codebase
+// 4. Keeping them would crash if accidentally invoked
+//
+// If you need Meta Cloud API integration in the future:
+// - Uncomment these functions
+// - Define WHATSAPP_API_BASE = 'https://graph.facebook.com/v18.0'
+// - Add WHATSAPP_ACCESS_TOKEN and WHATSAPP_PHONE_NUMBER_ID to .env
+// ============================================
+
+/*
+// ============================================
 // SEND TEMPLATE MESSAGE (Optional)
 // ============================================
 
@@ -145,7 +362,7 @@ export async function sendWhatsAppMessage(
  * Useful for notifications and structured messages
  * 
  * Note: Templates must be created and approved in Meta Business Manager first
- */
+ *‎/
 export async function sendWhatsAppTemplate(
   phoneNumber: string,
   templateName: string,
@@ -220,7 +437,7 @@ export async function sendWhatsAppTemplate(
 /**
  * Mark an incoming message as read
  * This shows blue checkmarks in WhatsApp
- */
+ *‎/
 export async function markMessageAsRead(messageId: string): Promise<boolean> {
   const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
@@ -259,6 +476,7 @@ export async function markMessageAsRead(messageId: string): Promise<boolean> {
     return false;
   }
 }
+*/
 
 // ============================================
 // HELPER: FORMAT MESSAGE FOR WHATSAPP

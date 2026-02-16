@@ -53,7 +53,7 @@ export default function MealsPage() {
       setDishes(data || []);
     } catch (err: any) {
       console.error('Error fetching dishes:', err);
-      toast.error('Failed to load dishes', 'Please try again');
+      toast.error('That didn't work — want to try again?');
     } finally {
       setLoading(false);
     }
@@ -84,7 +84,7 @@ export default function MealsPage() {
       }
     } catch (err: any) {
       console.error('Error fetching dish details:', err);
-      toast.error('Failed to load dish details', 'Please try again');
+      toast.error('That didn't work — want to try again?');
     }
   };
 
@@ -207,7 +207,7 @@ export default function MealsPage() {
       toast.success('Recipe saved!', formTitle.trim());
     } catch (err: any) {
       console.error('Error saving recipe:', err);
-      toast.error('Failed to save recipe', 'Please try again');
+      toast.error('That didn't work — want to try again?');
     } finally {
       setSaving(false);
     }

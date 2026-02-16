@@ -33,6 +33,7 @@ export default function HomePage() {
   const [tasks, setTasks] = useState<TodayTask[]>([]);
   const [loading, setLoading] = useState(true);
   const [groceryMissing, setGroceryMissing] = useState(0);
+  const [isWhatsAppLinked, setIsWhatsAppLinked] = useState(true); // Default true to hide until we know
 
   const today = new Date().toISOString().split('T')[0];
 
@@ -44,6 +45,15 @@ export default function HomePage() {
 
   const fetchTodayData = async () => {
     try {
+      // Check if WhatsApp is linked
+      const { data: whatsappData } = await supabase
+        .from('whatsapp_users')
+        .select('auth_user_id')
+        .eq('auth_user_id', user?.id)
+        .maybeSingle();
+      
+      setIsWhatsAppLinked(!!whatsappData);
+
       // Fetch today's meals
       const { data: mealsData } = await supabase
         .from('mealplanslots')
@@ -157,6 +167,18 @@ export default function HomePage() {
             </div>
           ) : (
             <div className="space-y-6">
+              {/* WhatsApp Linking Card - Only show if not linked */}
+              {!isWhatsAppLinked && (
+                <button
+                  onClick={() => router.push('/link-whatsapp')}
+                  className="w-full text-left p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors"
+                >
+                  <p className="text-sm text-blue-700 dark:text-blue-300">
+                    💬 Link WhatsApp – add tasks on the go
+                  </p>
+                </button>
+              )}
+
               {/* Card 1: Today's Tasks */}
               <Card className="hover:border-emerald-600/50 dark:hover:border-emerald-800/50 transition-colors">
                 <div className="flex items-center justify-between mb-4">

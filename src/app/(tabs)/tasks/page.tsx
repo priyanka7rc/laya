@@ -72,7 +72,7 @@ export default function TasksPage() {
       setTasks(sorted);
     } catch (err: any) {
       console.error('Error fetching tasks:', err);
-      toast.error('Failed to load tasks', 'Please try again');
+      toast.error('That didn't work — want to try again?');
     } finally {
       setLoading(false);
     }
@@ -82,7 +82,7 @@ export default function TasksPage() {
     e?.preventDefault();
     
     if (!quickTitle.trim()) {
-      toast.error('Task title required', 'Please enter a task title');
+      toast.error('Task title required');
       return;
     }
 
@@ -97,6 +97,7 @@ export default function TasksPage() {
           due_date: quickDate || null,
           due_time: quickTime || null,
           is_done: false,
+          reminder_sent: false,
         }])
         .select()
         .single();
@@ -175,7 +176,7 @@ export default function TasksPage() {
       console.error('Error toggling task:', err);
       // Revert on error
       setTasks(previousTasks);
-      toast.error('Failed to update task', 'Please try again');
+      toast.error('That didn't work — want to try again?');
     }
   };
 
