@@ -91,9 +91,9 @@ export default function TaskForm({ onSuccess, onError, editTask }: TaskFormProps
       console.error('Error saving task:', error);
       
       if (onError) {
-        onError("That didn't work — want to try again?");
+        onError("That didn\'t work - want to try again?");
       } else {
-        alert("That didn't work — want to try again?");
+        alert("That didn\'t work - want to try again?");
       }
     } finally {
       setLoading(false);

@@ -365,7 +365,7 @@ export async function processWhatsAppMessage(message: IncomingMessage): Promise<
     console.log('💬 Laya response:', layaResponse.user_facing_response);
 
     // 6. Save structured data and get confirmations
-    const confirmations = await saveStructuredData(userId, inboundMessageId, layaResponse.structured);
+    const confirmations = await saveStructuredData(userId, inboundMessageId || '', layaResponse.structured);
 
     // Log action result
     const focusAfter = getFocus(userId);
@@ -577,7 +577,7 @@ async function getConversationContext(userId: string): Promise<ConversationMessa
     const contextMessages = (data || [])
       .reverse()
       .map((msg) => ({
-        role: msg.role === 'user' ? 'user' : 'assistant',
+        role: (msg.role === 'user' ? 'user' : 'assistant') as 'user' | 'assistant',
         content: msg.content,
       }));
 
@@ -600,7 +600,7 @@ async function saveStructuredData(
     tasks: Array<{ title: string; due_date: string | null; due_time: string | null; category: string | null }>;
     groceries: Array<{ item_name: string; quantity: string | null; needed_by: string | null }>;
     reminders: Array<{ title: string; remind_at: string | null }>;
-    mood_tag: string | null;
+    mood_tag?: string | null;
   }
 ): Promise<string[]> {
   const confirmations: string[] = [];
@@ -889,7 +889,7 @@ async function handleTaskQuery(
     console.error('Error in handleTaskQuery:', error);
     await sendWhatsAppMessage(
       phoneNumber,
-      "I couldn't retrieve your tasks — had trouble with that query."
+      "I couldn't retrieve your tasks - had trouble with that query."
     );
   }
 }
@@ -1051,7 +1051,7 @@ async function handleTaskEdit(
     }
 
     // Build confirmation message
-    let confirmation = `Done — I've updated "${taskToEdit.title}" to `;
+    let confirmation = `Done - I've updated "${taskToEdit.title}" to `;
 
     const isToday = newDate === new Date().toISOString().split('T')[0];
     const isTomorrow = (() => {
@@ -1231,7 +1231,7 @@ async function handleEditClarification(
     }
 
     // Build confirmation message
-    let confirmation = `Done — I've updated "${selectedTask.title}" to `;
+    let confirmation = `Done - I've updated "${selectedTask.title}" to `;
 
     const isToday = newDate === new Date().toISOString().split('T')[0];
     const isTomorrow = (() => {

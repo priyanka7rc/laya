@@ -300,8 +300,8 @@ async function storeAudioInSupabase(
  */
 async function transcribeWithWhisper(audioBuffer: Buffer): Promise<string> {
   try {
-    // Create a File-like object from the buffer
-    const audioFile = new File([audioBuffer], 'audio.ogg', {
+    // Create a File-like object from the buffer (cast to any to bypass type checking)
+    const audioFile = new File([audioBuffer as any], 'audio.ogg', {
       type: 'audio/ogg',
     });
 

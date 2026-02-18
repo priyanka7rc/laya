@@ -30,5 +30,23 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules",
+    "scripts",
+    "src/lib/groceryListGenerator.ts",
+    "src/lib/mealPlanGenerator.ts",
+    "src/lib/mealComposer.ts",
+    "src/lib/dishCompiler.ts",
+    "src/lib/ingredientNormalizer.ts",
+    "src/lib/mealPlanPolicy.ts",
+    "src/lib/mealPlanAiContract.ts",
+    "src/config/meal-composition.ts",
+    "src/app/_disabled_mealplan/**",
+    "src/app/_disabled_grocery/**",
+    "src/app/_disabled_dish/**",
+    "src/app/(tabs)/_disabled_meals/**",
+    "src/app/api/_disabled_meal-plan/**",
+    "src/app/api/_disabled_grocery-list/**",
+    "src/components/_disabled_RecipePicker.tsx"
+  ]
 }

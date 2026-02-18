@@ -72,7 +72,7 @@ export default function TasksPage() {
       setTasks(sorted);
     } catch (err: any) {
       console.error('Error fetching tasks:', err);
-      toast.error('That didn't work — want to try again?');
+      toast.error('That didn\'t work - want to try again?');
     } finally {
       setLoading(false);
     }
@@ -176,7 +176,7 @@ export default function TasksPage() {
       console.error('Error toggling task:', err);
       // Revert on error
       setTasks(previousTasks);
-      toast.error('That didn't work — want to try again?');
+      toast.error('That didn\'t work - want to try again?');
     }
   };
 

@@ -33,7 +33,7 @@ export default function LinkWhatsAppPage() {
       // Get access token from Supabase session
       const { data: { session } } = await supabase.auth.getSession();
       if (!session?.access_token) {
-        throw new Error('That didn't work — want to try again?');
+        throw new Error('That didn\'t work - want to try again?');
       }
 
       const response = await fetch('/api/link-whatsapp', {
@@ -55,7 +55,7 @@ export default function LinkWhatsAppPage() {
       setPhoneNumber('');
     } catch (err: any) {
       console.error('Error linking WhatsApp:', err);
-      setError(err.message || 'That didn't work — want to try again?');
+      setError(err.message || 'That didn\'t work - want to try again?');
     } finally {
       setLoading(false);
     }

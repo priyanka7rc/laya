@@ -54,6 +54,11 @@ export default function HomePage() {
       
       setIsWhatsAppLinked(!!whatsappData);
 
+      {/* ============================================================================ */}
+      {/* DISABLED FOR TASK-ONLY MVP: Meal plan fetching */}
+      {/* To re-enable: Uncomment this section */}
+      {/* ============================================================================ */}
+      {/*
       // Fetch today's meals
       const { data: mealsData } = await supabase
         .from('mealplanslots')
@@ -70,6 +75,7 @@ export default function HomePage() {
       });
 
       setMeals(formattedMeals);
+      */}
 
       // Fetch today's tasks
       const { data: tasksData } = await supabase
@@ -81,6 +87,11 @@ export default function HomePage() {
 
       setTasks(tasksData || []);
 
+      {/* ============================================================================ */}
+      {/* DISABLED FOR TASK-ONLY MVP: Grocery status fetching */}
+      {/* To re-enable: Uncomment this section */}
+      {/* ============================================================================ */}
+      {/*
       // Fetch grocery status
       const monday = getMonday();
       const { count } = await supabase
@@ -91,6 +102,7 @@ export default function HomePage() {
         .eq('is_checked', false);
 
       setGroceryMissing(count || 0);
+      */}
     } catch (err: any) {
       console.error('Error fetching today data:', err);
     } finally {
@@ -195,7 +207,7 @@ export default function HomePage() {
 
                 {taskCount === 0 ? (
                   <div className="text-center py-6">
-                    <p className="text-gray-600 dark:text-gray-400 mb-1">Light day—enjoy it ✨</p>
+                    <p className="text-gray-600 dark:text-gray-400 mb-1">Light day - enjoy it ✨</p>
                     <p className="text-sm text-gray-500">No tasks due today</p>
                   </div>
                 ) : (
@@ -239,7 +251,11 @@ export default function HomePage() {
                 )}
               </Card>
 
-              {/* Card 2: Meals Today */}
+              {/* ============================================================================ */}
+              {/* DISABLED FOR TASK-ONLY MVP: Meals Today Card */}
+              {/* To re-enable: Uncomment this entire Card section */}
+              {/* ============================================================================ */}
+              {/*
               <Card className="hover:border-purple-600/50 dark:hover:border-emerald-800/50 transition-colors">
                 <div className="flex items-center gap-3 mb-4">
                   <span className="text-2xl">🍽️</span>
@@ -282,6 +298,7 @@ export default function HomePage() {
                   </div>
                 )}
               </Card>
+              */}
 
               {/* ============================================================================ */}
               {/* GROCERY READINESS CARD - Disabled while grocery feature is in development */}

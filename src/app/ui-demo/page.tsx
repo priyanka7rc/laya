@@ -28,7 +28,7 @@ function UIDemoPage() {
   };
 
   const handleErrorClick = () => {
-    toast.error('That didn't work — want to try again?');
+    toast.error('That didn\'t work - want to try again?');
   };
 
   return (

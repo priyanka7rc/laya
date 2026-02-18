@@ -53,7 +53,7 @@ export default function MealsPage() {
       setDishes(data || []);
     } catch (err: any) {
       console.error('Error fetching dishes:', err);
-      toast.error('That didn't work — want to try again?');
+      toast.error('That didn\'t work - want to try again?');
     } finally {
       setLoading(false);
     }
@@ -84,7 +84,7 @@ export default function MealsPage() {
       }
     } catch (err: any) {
       console.error('Error fetching dish details:', err);
-      toast.error('That didn't work — want to try again?');
+      toast.error('That didn\'t work - want to try again?');
     }
   };
 
@@ -170,11 +170,11 @@ export default function MealsPage() {
 
       // 2. Prepare ingredients as JSONB
       const ingredientsJson: IngredientJSON[] = formIngredients
-        .filter(ing => ing.item.trim())
+        .filter(ing => ing.item.trim() && ing.qty) // Only include ingredients with both name and quantity
         .map(ing => ({
           name: ing.item.trim(),
-          qty: ing.qty ? parseFloat(ing.qty) : null,
-          unit: ing.unit.trim() || null,
+          qty: parseFloat(ing.qty),
+          unit: ing.unit.trim() || 'unit',
         }));
 
       // 3. Prepare steps as JSONB
@@ -207,7 +207,7 @@ export default function MealsPage() {
       toast.success('Recipe saved!', formTitle.trim());
     } catch (err: any) {
       console.error('Error saving recipe:', err);
-      toast.error('That didn't work — want to try again?');
+      toast.error('That didn\'t work - want to try again?');
     } finally {
       setSaving(false);
     }

@@ -192,11 +192,6 @@ export async function POST(request: NextRequest) {
       const validatedResult = ParsedDumpSchema.parse(parsedDump);
       return NextResponse.json(validatedResult);
     }
-
-    // Validate response with Zod
-    const validatedResult = ParsedDumpSchema.parse(parsedDump);
-
-    return NextResponse.json(validatedResult);
   } catch (error: any) {
     console.error('Error parsing dump:', error);
     

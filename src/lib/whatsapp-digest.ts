@@ -155,7 +155,7 @@ export async function runDailyDigestJob(): Promise<{
         continue;
       }
 
-      // Skip if no tasks for today — revert claim
+      // Skip if no tasks for today - revert claim
       if (!tasks || tasks.length === 0) {
         console.log(
           `[WA][DIGEST] Skip | userId=${user.auth_user_id} | reason=no_tasks_today`
@@ -199,7 +199,7 @@ export async function runDailyDigestJob(): Promise<{
         );
         stats.sent++;
       } else {
-        // Send failed — revert the claim so it can be retried
+        // Send failed - revert the claim so it can be retried
         console.log(
           `[WA][DIGEST] Revert | userId=${user.auth_user_id} | reason=send_failed`
         );

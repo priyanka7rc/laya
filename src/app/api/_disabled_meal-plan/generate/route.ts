@@ -424,7 +424,9 @@ async function composeMealsForWeek(
 export async function POST(request: NextRequest) {
   try {
     const timestamp = getISTTimestamp();
-    const { weekStartDate: rawWeekStartDate, userId, excludeDishes = [] } = await request.json();
+    const body = await request.json();
+    const { weekStartDate: rawWeekStartDate, userId, excludeDishes = [] } = body;
+    const typedExcludeDishes = (excludeDishes as unknown[]).filter((d): d is string => typeof d === 'string');
 
     if (!userId) {
       return NextResponse.json({ error: 'User ID required' }, { status: 400 });
@@ -573,7 +575,7 @@ export async function POST(request: NextRequest) {
     if (emptySlots.length > 0) {
       console.log(`[${timestamp}] 🤖 Calling AI to generate ${emptySlots.length} slots...`);
       console.time(`[${timestamp}] ⏱️  AI: generateWeeklyMealPlan`);
-      const aiExcludeDishes = [...new Set(excludeDishes)];
+      const aiExcludeDishes = [...new Set(typedExcludeDishes)];
       generatedPlan = await generateWeeklyMealPlan(userId, aiExcludeDishes);
       console.timeEnd(`[${timestamp}] ⏱️  AI: generateWeeklyMealPlan`);
       console.log(`[${timestamp}] ✅ OpenAI returned ${generatedPlan.meals.length} meals\n`);
@@ -584,7 +586,7 @@ export async function POST(request: NextRequest) {
     // Fetch dishes for matching and policy evaluation
     const { data: allDishes, error: dishesError } = await supabase
       .from('dishes')
-      .select('id, canonical_name, aliases, primary_component_type, effort_level, serving_context_weight, usage_count, dish_universe_id');
+      .select('id, canonical_name, aliases, primary_component_type, effort_level, serving_context_weight, usage_count, dish_universe_id, cuisine_tags, ontology_tokens, typical_meal_slots, created_at');
 
     if (dishesError) throw dishesError;
 
@@ -1008,8 +1010,8 @@ export async function POST(request: NextRequest) {
             meal_anchor: meal.meal_anchor,
             day_of_week: meal.day,
             meal_slot: meal.slot,
-            weight_band: c.weight_band || 'unknown',
-            role: c.role || 'unknown',
+            weight_band: meal.weight_band || 'unknown',
+            role: meal.role || 'unknown',
             metadata: {
               component_type: c.component_type,
               dish_name: c.dish_name,
