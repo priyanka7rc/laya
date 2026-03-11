@@ -1,36 +1,40 @@
 'use client';
 
-import { useToastContext } from '@/context/ToastContext';
+import { useToastContext, ToastAction } from '@/context/ToastContext';
 
 export function useToast() {
   const { addToast } = useToastContext();
 
-  const toast = ({
+  const base = ({
     title,
     description,
     variant = 'info',
     duration = 3000,
+    action,
   }: {
     title: string;
     description?: string;
     variant?: 'success' | 'error' | 'info';
     duration?: number;
+    action?: ToastAction;
   }) => {
-    addToast({ title, description, variant, duration });
+    addToast({ title, description, variant, duration, action });
   };
 
   // Convenience methods
-  toast.success = (title: string, description?: string) => {
-    toast({ title, description, variant: 'success' });
+  const success = (title: string, description?: string) => {
+    base({ title, description, variant: 'success' });
   };
 
-  toast.error = (title: string, description?: string) => {
-    toast({ title, description, variant: 'error' });
+  const error = (title: string, description?: string) => {
+    base({ title, description, variant: 'error' });
   };
 
-  toast.info = (title: string, description?: string) => {
-    toast({ title, description, variant: 'info' });
+  const info = (title: string, description?: string) => {
+    base({ title, description, variant: 'info' });
   };
+
+  const toast = Object.assign(base, { success, error, info });
 
   return { toast };
 }

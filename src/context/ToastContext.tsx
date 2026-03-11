@@ -2,12 +2,18 @@
 
 import { createContext, useContext, useState, useCallback, ReactNode } from 'react';
 
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
 export interface Toast {
   id: string;
   title: string;
   description?: string;
   variant?: 'success' | 'error' | 'info';
   duration?: number;
+  action?: ToastAction;
 }
 
 interface ToastContextType {
@@ -20,6 +26,10 @@ const ToastContext = createContext<ToastContextType | undefined>(undefined);
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
+
+  const removeToast = useCallback((id: string) => {
+    setToasts((prev) => prev.filter((toast) => toast.id !== id));
+  }, []);
 
   const addToast = useCallback((toast: Omit<Toast, 'id'>) => {
     const id = Math.random().toString(36).slice(2, 9);
@@ -38,11 +48,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         removeToast(id);
       }, newToast.duration);
     }
-  }, []);
-
-  const removeToast = useCallback((id: string) => {
-    setToasts((prev) => prev.filter((toast) => toast.id !== id));
-  }, []);
+  }, [removeToast]);
 
   return (
     <ToastContext.Provider value={{ toasts, addToast, removeToast }}>

@@ -3,7 +3,10 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { useAuth } from './AuthProvider';
-import { validateTaskQuickAdd } from '@/lib/validation';  // ← Add
+import { validateTaskQuickAdd } from '@/lib/validation';
+import { getCurrentAppUser } from '@/lib/users/linking';
+import { TASK_SOURCES } from '@/lib/taskSources';
+import { toHHMM } from '@/lib/taskRulesParser';
 
 interface TaskFormProps {
   onSuccess?: () => void;
@@ -54,28 +57,79 @@ export default function TaskForm({ onSuccess, onError, editTask }: TaskFormProps
       }
 
       // ← Continue with save (use validated data)
-      const { alert_count, alert_offsets, ...dbData } = validation.data || {};
-      
-      const saveData = {
-        ...dbData,
-        user_id: user?.id,
-        source: 'web',
-        reminder_sent: false,
-      };
+      const { alert_count, alert_offsets, ...dbData } = validation.data!;
 
       if (editTask) {
-        const { error } = await supabase
-          .from('tasks')
-          .update(saveData)
-          .eq('id', editTask.id);
-        
-        if (error) throw error;
+        // Edit: route through canonical update API (schedule recompute + ownership in server).
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const DEFAULT_TASK_TIME = '20:00';
+        const rawDate = dbData.due_date;
+        const dueDateFinal =
+          rawDate && /^\d{4}-\d{2}-\d{2}$/.test(String(rawDate).trim())
+            ? String(rawDate).trim()
+            : todayStr;
+        const rawTime = dbData.due_time;
+        const dueTimeFinal =
+          (rawTime && toHHMM(String(rawTime).trim())) || DEFAULT_TASK_TIME;
+
+        const { data: { session } } = await supabase.auth.getSession();
+        const res = await fetch('/api/tasks/update', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+          },
+          body: JSON.stringify({
+            taskId: editTask.id,
+            title: dbData.title,
+            category: dbData.category ?? null,
+            due_date: dueDateFinal,
+            due_time: dueTimeFinal,
+            notes: dbData.notes ?? null,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const msg = (data && typeof data === 'object' && 'error' in data && (data as { error?: string }).error) || 'Failed to update task';
+          if (onError) onError(msg);
+          return;
+        }
       } else {
-        const { error } = await supabase
-          .from('tasks')
-          .insert([saveData]);
-        
-        if (error) throw error;
+        // Create mode: route through canonical /api/tasks/create so parsing,
+        // schedule defaults, inferred flags, and dedupe are handled centrally.
+
+        // Optional app user linkage (non-blocking)
+        let appUserId: string | null = null;
+        try {
+          const appUser = await getCurrentAppUser();
+          appUserId = appUser?.id ?? null;
+        } catch {
+          // If app user lookup fails, fall back to auth user only.
+        }
+
+        const { data: { session } } = await supabase.auth.getSession();
+
+        const res = await fetch('/api/tasks/create', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+          },
+          body: JSON.stringify({
+            text: dbData.title,
+            due_date: dbData.due_date || undefined,
+            due_time: dbData.due_time || undefined,
+            allowDuplicate: true,
+            app_user_id: appUserId,
+          }),
+        });
+
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const msg = (data && typeof data === 'object' && 'error' in data && (data as any).error) || 'Failed to save task';
+          if (onError) onError(msg);
+          return;
+        }
       }
 
       // Reset form

@@ -70,33 +70,32 @@ export async function canSendFreeformMessage(userId: string): Promise<boolean> {
 // ============================================
 
 /**
- * Send a text message to a WhatsApp user via Gupshup
- * 
- * @param phoneNumber - Recipient's phone number (with country code, no +)
- * @param message - Text message to send (max 4096 characters)
- * @returns Message ID if successful
+ * Send a text message to a WhatsApp user via Gupshup.
+ *
+ * Canonical return shape for anchoring is:
+ *   { providerMessageId: string }
  */
 export async function sendWhatsAppMessage(
   phoneNumber: string,
   message: string
-): Promise<string | null> {
+): Promise<{ providerMessageId: string } | null> {
   // Feature flag check
   if (process.env.WHATSAPP_ENABLED !== 'true') {
     console.log('[WA] Outbound blocked by feature flag | type=free-form');
-    return null;
+    return { providerMessageId: 'stub-message-id' };
   }
 
   const apiKey = process.env.GUPSHUP_API_KEY;
   const sourceNumber = process.env.GUPSHUP_SOURCE_NUMBER;
 
   // For local testing without Gupshup credentials
-  if (!apiKey || !sourceNumber) {
-    console.log('📤 [STUB] Would send WhatsApp message via Gupshup:');
-    console.log(`   To: ${phoneNumber}`);
-    console.log(`   Message: ${message}`);
-    console.log('   (Add GUPSHUP_API_KEY and GUPSHUP_SOURCE_NUMBER to .env.local to enable real sending)');
-    return 'stub-message-id';
-  }
+    if (!apiKey || !sourceNumber) {
+      console.log('📤 [STUB] Would send WhatsApp message via Gupshup:');
+      console.log(`   To: ${phoneNumber}`);
+      console.log(`   Message: ${message}`);
+      console.log('   (Add GUPSHUP_API_KEY and GUPSHUP_SOURCE_NUMBER to .env.local to enable real sending)');
+      return { providerMessageId: 'stub-message-id' };
+    }
 
   try {
     // Ensure message is not too long (WhatsApp limit: 4096 chars)
@@ -133,9 +132,23 @@ export async function sendWhatsAppMessage(
       throw new Error(`Gupshup API error: ${response.statusText}`);
     }
 
-    const data = await response.json();
-    console.log('✅ Message sent via Gupshup:', data.messageId || data);
-    return data.messageId || 'gupshup-message-sent';
+    const data: any = await response.json();
+    const providerMessageId: string | undefined =
+      data.messageId ||
+      data.messageID ||
+      data.id ||
+      data.message_id;
+
+    if (!providerMessageId) {
+      console.error(
+        '❌ Gupshup response missing provider message id; outbound message will not be anchorable:',
+        data
+      );
+      return null;
+    }
+
+    console.log('✅ Message sent via Gupshup:', providerMessageId);
+    return { providerMessageId };
   } catch (error) {
     console.error('❌ Error sending WhatsApp message:', error);
     return null;

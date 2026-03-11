@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import { createClient } from '@supabase/supabase-js';
+import { getCategoryListForPrompt } from '@/lib/categories';
 
 // Initialize OpenAI client
 const openai = new OpenAI({
@@ -12,7 +13,7 @@ const PRICING = {
   output: 0.60,  // $0.60 per 1M output tokens
 };
 
-// System prompt for task parsing
+// System prompt for task parsing (category list from canonical @/lib/categories)
 const TASK_PARSING_PROMPT = `You are a task parsing assistant. Extract structured task information from natural language input.
 
 Return JSON in this exact format:
@@ -20,7 +21,7 @@ Return JSON in this exact format:
   "title": "Clean, actionable task title (remove time/date phrases)",
   "due_date": "YYYY-MM-DD or null",
   "due_time": "HH:MM or null (24-hour format)",
-  "category": "Shopping|Meals|Work|Health|Home|Personal|Finance|Tasks"
+  "category": "${getCategoryListForPrompt()}"
 }
 
 Rules:
@@ -32,14 +33,15 @@ Rules:
    - "evening" → 18:00
    - No time mentioned → null
    - No date mentioned → null (today is implied)
-3. Detect category from task content:
+3. Detect category from task content (use only the categories listed above):
    - Shopping: buy, get, purchase, groceries, milk, eggs, etc.
    - Meals: cook, prepare, bake, dinner, lunch, breakfast, etc.
    - Work: meeting, project, deadline, email, presentation, etc.
-   - Health: doctor, dentist, appointment, checkup, medicine, gym, workout, etc.
+   - Health: doctor, dentist, appointment, checkup, medicine, etc.
    - Home: clean, laundry, dishes, vacuum, organize, fix, repair, etc.
    - Personal: call, text, visit, birthday, family, friend, etc.
    - Finance: pay, bill, bank, transfer, budget, taxes, etc.
+   - Admin, Fitness, Learning: use when clearly indicated
    - Tasks: anything that doesn't fit above
 4. Handle casual language and variations
 5. If input is ambiguous, make best guess

@@ -1,42 +1,21 @@
 /**
  * WhatsApp Task Reminder Scheduler
- * Sends reminders for due tasks via WhatsApp
+ * Sends reminders for due tasks via WhatsApp.
+ * Task selection is delegated to TaskViewEngine (view: reminderWindow).
  */
 
 import { createClient } from '@supabase/supabase-js';
 import { sendWhatsAppMessageWithFallback } from './whatsapp-client';
 import { TEMPLATES } from './whatsapp-templates';
-import { formatWhen } from './whatsapp-formatters';
-
-// ============================================
-// SUPABASE CLIENT
-// ============================================
+import { formatWhenFromDueAt } from '@/lib/taskView/formatters/whatsapp';
+import { DEFAULT_TZ } from '@/lib/taskView/time';
+import { executeTaskView } from '@/server/taskView/taskViewEngine';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-// ============================================
-// REMINDER JOB
-// ============================================
-
-/**
- * Run reminder job for all due tasks
- * 
- * Queries tasks where:
- * - due_at <= now()
- * - reminder_sent = false
- * - is_done = false
- * 
- * For each task:
- * - Skip if user opted_out = true
- * - Skip if task has no due_time (only date-specific tasks get reminders)
- * - Send via session-aware router (free-form or template)
- * - Mark as reminder_sent on success
- * 
- * @returns Object with counts: { total, sent, skipped, failed }
- */
 export async function runReminderJob(): Promise<{
   total: number;
   sent: number;
@@ -44,147 +23,90 @@ export async function runReminderJob(): Promise<{
   failed: number;
 }> {
   console.log('[WA][REMINDER] Starting reminder job...');
-  
-  const stats = {
-    total: 0,
-    sent: 0,
-    skipped: 0,
-    failed: 0,
-  };
+
+  const stats = { total: 0, sent: 0, skipped: 0, failed: 0 };
 
   try {
-    // Query tasks that need reminders
-    const { data: tasks, error: queryError } = await supabase
-      .from('tasks')
-      .select(`
-        id,
-        user_id,
-        title,
-        due_date,
-        due_time,
-        whatsapp_users!inner(phone_number, opted_out)
-      `)
-      .eq('is_done', false)
-      .eq('reminder_sent', false)
-      .not('due_at', 'is', null)
-      .lte('due_at', new Date().toISOString());
+    const { data: waUsers, error: usersError } = await supabase
+      .from('whatsapp_users')
+      .select('auth_user_id, phone_number')
+      .eq('opted_out', false)
+      .not('auth_user_id', 'is', null);
 
-    if (queryError) {
-      console.error('[WA][REMINDER] Query error:', queryError);
+    if (usersError || !waUsers?.length) {
+      if (usersError) console.error('[WA][REMINDER] Users query error:', usersError);
       return stats;
     }
 
-    if (!tasks || tasks.length === 0) {
-      console.log('[WA][REMINDER] No tasks need reminders');
-      return stats;
+    const { data: appUsers } = await supabase
+      .from('app_users')
+      .select('id, auth_user_id, timezone')
+      .in('auth_user_id', waUsers.map((u) => u.auth_user_id).filter(Boolean) as string[]);
+
+    const byAuth = new Map<string | null, { appUserId: string; phoneNumber: string; timezone: string }>();
+    for (const w of waUsers) {
+      const app = appUsers?.find((a) => a.auth_user_id === w.auth_user_id);
+      if (app && w.phone_number) {
+        const tz = app.timezone || DEFAULT_TZ;
+        byAuth.set(w.auth_user_id, { appUserId: app.id, phoneNumber: w.phone_number, timezone: tz });
+      }
     }
 
-    stats.total = tasks.length;
-    console.log(`[WA][REMINDER] Found ${tasks.length} tasks needing reminders`);
-
-    // Process each task
-    for (const task of tasks as any[]) {
-      const whatsappUser = task.whatsapp_users;
-      
-      if (!whatsappUser || !whatsappUser.phone_number) {
-        console.log(
-          `[WA][REMINDER] Skip | taskId=${task.id} | reason=no_whatsapp_user`
-        );
-        stats.skipped++;
-        continue;
-      }
-
-      // Skip if user opted out
-      if (whatsappUser.opted_out) {
-        console.log(
-          `[WA][REMINDER] Skip | taskId=${task.id} | ` +
-          `userId=${task.user_id} | reason=opted_out`
-        );
-        stats.skipped++;
-        continue;
-      }
-
-      // Skip if no time component (only send reminders for time-specific tasks)
-      if (!task.due_time) {
-        console.log(
-          `[WA][REMINDER] Skip | taskId=${task.id} | ` +
-          `userId=${task.user_id} | reason=no_time_component`
-        );
-        stats.skipped++;
-        continue;
-      }
-
-      // ATOMIC UPDATE: Claim the task first (prevents race conditions)
-      const { data: claimed, error: claimError } = await supabase
-        .from('tasks')
-        .update({
-          reminder_sent: true,
-          reminder_sent_at: new Date().toISOString(),
-        })
-        .eq('id', task.id)
-        .eq('reminder_sent', false) // Only update if still false
-        .select('id, title, due_date, due_time')
-        .maybeSingle();
-
-      // If no rows affected, another job already claimed this task
-      if (!claimed) {
-        console.log(
-          `[WA][REMINDER] Skip | taskId=${task.id} | reason=already_claimed`
-        );
-        stats.skipped++;
-        continue;
-      }
-
-      // Format reminder message
-      const when = formatWhen(claimed.due_date, claimed.due_time);
-      const freeFormMessage = `⏰ Reminder: ${claimed.title} (${when})`;
-      const templateParams = [claimed.title, when];
-
-      console.log(
-        `[WA][REMINDER] Sending | taskId=${task.id} | ` +
-        `userId=${task.user_id} | title="${claimed.title}"`
-      );
-
-      // Send via session-aware router
-      const messageId = await sendWhatsAppMessageWithFallback({
-        phoneNumber: whatsappUser.phone_number,
-        userId: task.user_id,
-        message: freeFormMessage,
-        templateId: TEMPLATES.TASK_REMINDER.templateId,
-        templateParams,
+    for (const [authUserId, { appUserId, phoneNumber, timezone }] of byAuth) {
+      const viewResult = await executeTaskView({
+        identity: { kind: 'appUserId' as const, appUserId },
+        view: 'reminderWindow',
+        now: new Date(),
+        timezone,
       });
 
-      if (messageId) {
-        console.log(
-          `[WA][REMINDER] Success | taskId=${task.id} | ` +
-          `msgId=${messageId}`
-        );
-        stats.sent++;
-      } else {
-        // Send failed - revert the claim
-        console.log(
-          `[WA][REMINDER] Failed | taskId=${task.id} | reason=send_failed | ` +
-          `action=reverting_claim`
-        );
-        
-        await supabase
+      for (const task of viewResult.tasks) {
+        const timePart = task.dueAt?.split('T')[1]?.slice(0, 5);
+        if (!task.dueAt || !timePart || timePart === '00:00') {
+          stats.skipped++;
+          continue;
+        }
+
+        stats.total++;
+
+        const { data: claimed, error: claimError } = await supabase
           .from('tasks')
-          .update({
-            reminder_sent: false,
-            reminder_sent_at: null,
-          })
-          .eq('id', task.id);
-        
-        stats.failed++;
+          .update({ reminder_sent: true, reminder_sent_at: new Date().toISOString() })
+          .eq('id', task.id)
+          .eq('reminder_sent', false)
+          .select('id, title, due_at')
+          .maybeSingle();
+
+        if (claimError || !claimed) {
+          stats.skipped++;
+          continue;
+        }
+
+        const when = formatWhenFromDueAt(claimed.due_at ?? task.dueAt, timezone);
+        const freeFormMessage = `⏰ Reminder: ${claimed.title} (${when})`;
+        const messageId = await sendWhatsAppMessageWithFallback({
+          phoneNumber,
+          userId: authUserId!,
+          message: freeFormMessage,
+          templateId: TEMPLATES.TASK_REMINDER.templateId,
+          templateParams: [claimed.title, when],
+        });
+
+        if (messageId) {
+          stats.sent++;
+        } else {
+          await supabase
+            .from('tasks')
+            .update({ reminder_sent: false, reminder_sent_at: null })
+            .eq('id', task.id);
+          stats.failed++;
+        }
       }
     }
 
     console.log(
-      `[WA][REMINDER] Job complete | ` +
-      `total=${stats.total} | sent=${stats.sent} | ` +
-      `skipped=${stats.skipped} | failed=${stats.failed}`
+      `[WA][REMINDER] Job complete | total=${stats.total} | sent=${stats.sent} | skipped=${stats.skipped} | failed=${stats.failed}`
     );
-
     return stats;
   } catch (error) {
     console.error('[WA][REMINDER] Job error:', error);

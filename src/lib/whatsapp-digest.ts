@@ -6,7 +6,8 @@
 import { createClient } from '@supabase/supabase-js';
 import { sendWhatsAppMessageWithFallback } from './whatsapp-client';
 import { TEMPLATES } from './whatsapp-templates';
-import { formatDigestList } from './whatsapp-formatters';
+import { executeTaskView } from '@/server/taskView/taskViewEngine';
+import { formatDigestFromResult } from '@/lib/taskView/formatters/whatsapp';
 
 // ============================================
 // SUPABASE CLIENT
@@ -129,23 +130,16 @@ export async function runDailyDigestJob(): Promise<{
         `[WA][DIGEST] Claim | userId=${user.auth_user_id} | date=${today}`
       );
 
-      // Query today's incomplete tasks
-      const { data: tasks, error: tasksError } = await supabase
-        .from('tasks')
-        .select('title, due_time')
-        .eq('user_id', user.auth_user_id)
-        .eq('is_done', false)
-        .eq('due_date', today)
-        .order('due_time', { ascending: true, nullsFirst: false });
+      const viewResult = await executeTaskView({
+        identity: { kind: 'authUserId', authUserId: user.auth_user_id },
+        view: 'digest',
+        filters: { status: 'active', date: today },
+        timezone: 'Asia/Kolkata',
+      });
 
-      if (tasksError) {
-        console.error(
-          `[WA][DIGEST] Query error | userId=${user.auth_user_id}:`,
-          tasksError
-        );
-        // Revert claim since we can't proceed
+      if (viewResult.identityResolved === false) {
         console.log(
-          `[WA][DIGEST] Revert | userId=${user.auth_user_id} | reason=task_query_failed`
+          `[WA][DIGEST] Revert | userId=${user.auth_user_id} | reason=no_app_user`
         );
         await supabase
           .from('whatsapp_users')
@@ -156,7 +150,7 @@ export async function runDailyDigestJob(): Promise<{
       }
 
       // Skip if no tasks for today - revert claim
-      if (!tasks || tasks.length === 0) {
+      if (!viewResult.tasks || viewResult.tasks.length === 0) {
         console.log(
           `[WA][DIGEST] Skip | userId=${user.auth_user_id} | reason=no_tasks_today`
         );
@@ -172,8 +166,8 @@ export async function runDailyDigestJob(): Promise<{
       }
 
       // Format digest message
-      const taskList = formatDigestList(tasks);
-      const taskCount = tasks.length;
+      const taskList = formatDigestFromResult(viewResult);
+      const taskCount = viewResult.tasks.length;
       const freeFormMessage = 
         `Good morning! You have ${taskCount} task${taskCount > 1 ? 's' : ''} due today:\n\n${taskList}`;
       const templateParams = [taskCount.toString(), taskList];

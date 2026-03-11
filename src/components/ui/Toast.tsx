@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useToastContext, Toast as ToastType } from '@/context/ToastContext';
+import { useToastContext, Toast as ToastType, ToastAction } from '@/context/ToastContext';
 
 export function ToastViewport() {
   const { toasts, removeToast } = useToastContext();
@@ -70,6 +70,17 @@ function ToastItem({ toast, onClose }: { toast: ToastType; onClose: () => void }
             <p className="text-xs md:text-sm opacity-90 mt-1 leading-snug">
               {toast.description}
             </p>
+          )}
+          {toast.action && (
+            <button
+              onClick={() => {
+                toast.action!.onClick();
+                onClose();
+              }}
+              className="mt-2 text-xs font-semibold underline underline-offset-2 opacity-90 hover:opacity-100 transition-opacity"
+            >
+              {toast.action.label}
+            </button>
           )}
         </div>
 

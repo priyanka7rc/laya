@@ -1,14 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
+import { splitBrainDump } from '@/lib/brainDumpParser';
+import { textToProposedTasksFromSegments } from '@/lib/task_intake';
 
-// Zod schema for a single task
+// Zod schema for rules-parsed task (due_date/due_time always set; flags for refinement; rawSegmentText for refinement)
 const TaskSchema = z.object({
   title: z.string().min(1).max(200),
   notes: z.string().optional().nullable(),
-  due_date: z.string().nullable(), // ISO date string or null
-  due_time: z.string().nullable(), // HH:MM format or null
+  due_date: z.string(),
+  due_time: z.string(),
   category: z.string().nullable(),
-//   priority: z.enum(['low', 'medium', 'high']).optional().default('medium'),
+  dueDateWasDefaulted: z.boolean(),
+  dueTimeWasDefaulted: z.boolean(),
+  rawSegmentText: z.string(),
+  inferred_date: z.boolean().optional(),
+  inferred_time: z.boolean().optional(),
 });
 
 // Zod schema for the API response
@@ -16,10 +22,6 @@ const ParsedDumpSchema = z.object({
   tasks: z.array(TaskSchema),
   summary: z.string().optional(),
 });
-
-// Types derived from schemas
-type Task = z.infer<typeof TaskSchema>;
-type ParsedDump = z.infer<typeof ParsedDumpSchema>;
 
 // Rate limiting: 5 requests per minute per user
 const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute in ms
@@ -76,124 +78,61 @@ async function checkRateLimit(key: string): Promise<boolean> {
   return true;
 }
 
-async function addJitter() {
-  // Random delay between 100-300ms to discourage hammering
-  const delay = 100 + Math.random() * 200;
-  await new Promise(resolve => setTimeout(resolve, delay));
-}
-
-async function getUserId(request: NextRequest): Promise<string | null> {
-  // Try to get user ID from authorization header (mobile app sends session token)
-  const authHeader = request.headers.get('authorization');
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.replace('Bearer ', '');
-    // Decode token to get user ID (simplified - in production use proper JWT verification)
-    try {
-      const payload = JSON.parse(atob(token.split('.')[1]));
-      return payload.sub || null;
-    } catch (e) {
-      console.error('Failed to decode auth token:', e);
-    }
-  }
-  
-  // Fallback: Return a test user ID for POC (remove in production)
-  return 'test-user-' + request.headers.get('x-forwarded-for');
-}
+const API_LOG = '[parseDump API]';
 
 export async function POST(request: NextRequest) {
+  console.log(API_LOG, 'POST start');
   try {
     // Check rate limit
     const rateLimitKey = getRateLimitKey(request);
     const isAllowed = await checkRateLimit(rateLimitKey);
-    
+
     if (!isAllowed) {
+      console.warn(API_LOG, 'rate limit exceeded');
       return NextResponse.json(
         { error: "Too many requests. Try again in a minute." },
         { status: 429 }
       );
     }
-    
-    // Add jittered delay to discourage hammering
-    await addJitter();
-    
+
     const { text } = await request.json();
 
     if (!text || typeof text !== 'string') {
+      console.warn(API_LOG, 'missing or invalid text');
       return NextResponse.json(
         { error: 'Text is required' },
         { status: 400 }
       );
     }
+    console.log(API_LOG, 'rules parse, text length', text.length);
 
-    // Check if OpenAI is configured
-    if (!process.env.OPENAI_API_KEY) {
-      console.warn('OpenAI not configured, using mock parsing');
-      const parsedDump = await mockParseText(text);
-      const validatedResult = ParsedDumpSchema.parse(parsedDump);
-      return NextResponse.json(validatedResult);
-    }
-
-    // Get user ID from auth header or session
-    const userId = await getUserId(request);
-    if (!userId) {
-      return NextResponse.json(
-        { error: 'Authentication required' },
-        { status: 401 }
-      );
-    }
-
-    // Check token quota
-    const { checkTokenQuota, parseTaskWithAI, logUsage, calculateCost } = await import('@/lib/openai');
-    const hasQuota = await checkTokenQuota(userId);
-    
-    if (!hasQuota) {
-      return NextResponse.json(
-        { 
-          error: 'Token quota exceeded',
-          message: 'You have reached your monthly token limit. Please contact support to increase your quota.'
-        },
-        { status: 403 }
-      );
-    }
-
-    // Parse with OpenAI
-    try {
-      const result: any = await parseTaskWithAI(text);
-      
-      // Log usage
-      await logUsage(userId, {
-        model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
-        prompt_tokens: result.promptTokens,
-        completion_tokens: result.completionTokens,
-        total_tokens: result.totalTokens,
-        estimated_cost_usd: result.cost,
-        input_text: text,
-        endpoint: '/api/parseDump',
-      });
-
-      // Format response
-      const parsedDump = {
-        tasks: [{
-          title: result.title,
-          notes: null,
-          due_date: result.due_date,
-          due_time: result.due_time,
-          category: result.category,
-        }],
-        summary: 'Task parsed with AI',
-      };
-
-      const validatedResult = ParsedDumpSchema.parse(parsedDump);
-      return NextResponse.json(validatedResult);
-    } catch (aiError) {
-      console.error('OpenAI parsing failed, falling back to mock:', aiError);
-      // Fallback to mock parsing
-      const parsedDump = await mockParseText(text);
-      const validatedResult = ParsedDumpSchema.parse(parsedDump);
-      return NextResponse.json(validatedResult);
-    }
+    // Canonical pipeline: split then segmentToProposedTask (Feature #1 only). Map to API shape for refine + insert.
+    const segments = splitBrainDump(text);
+    const rawSegments = segments.length === 0 ? [text.trim().slice(0, 500) || 'Task'] : segments;
+    const proposed = textToProposedTasksFromSegments(rawSegments);
+    const tasks = proposed.map((t) => ({
+      title: t.title,
+      notes: null,
+      due_date: t.due_date,
+      due_time: t.due_time,
+      category: t.category,
+      dueDateWasDefaulted: t.inferred_date,
+      dueTimeWasDefaulted: t.inferred_time,
+      rawSegmentText: t.rawCandidate,
+      inferred_date: t.inferred_date,
+      inferred_time: t.inferred_time,
+    }));
+    const parsedDump = {
+      tasks,
+      summary: tasks.length === 1
+        ? 'Extracted 1 task'
+        : `Extracted ${tasks.length} tasks from your brain dump`,
+    };
+    const validatedResult = ParsedDumpSchema.parse(parsedDump);
+    console.log(API_LOG, 'rules done', { taskCount: validatedResult.tasks.length });
+    return NextResponse.json(validatedResult);
   } catch (error: any) {
-    console.error('Error parsing dump:', error);
+    console.error(API_LOG, 'Error', error?.message ?? error);
     
     if (error instanceof z.ZodError) {
       return NextResponse.json(
@@ -209,215 +148,3 @@ export async function POST(request: NextRequest) {
   }
 }
 
-/**
- * Mock function that simulates OpenAI parsing
- * Replace this with actual OpenAI call later
- */
-async function mockParseText(text: string): Promise<ParsedDump> {
-  await new Promise(resolve => setTimeout(resolve, 800));
-
-  // Split into separate tasks
-  const taskStrings = text
-    .split(/[,;]|(?:\band\b)/i)
-    .map(t => t.trim())
-    .filter(t => t.length > 0);
-
-  if (taskStrings.length === 0) {
-    return {
-      tasks: [{
-        title: text.trim().slice(0, 100),
-        notes: null,
-          due_date: getTodayDate(),  // Changed from null
-          due_time: '20:00:00',      // Changed from null
-        category: 'Brain Dump',
-      }],
-      summary: 'Extracted 1 task',
-    };
-  }
-
-  // Parse each task string individually
-  const parsedTasks = taskStrings.map(taskStr => {
-    // Extract and remove date/time info to get clean title
-    const timeInfo = extractTimeFromText(taskStr);
-    const dateInfo = extractDateFromText(taskStr);
-    
-    // Remove date/time phrases from title
-    let cleanTitle = taskStr
-      .replace(/\b(at|@)\s*\d{1,2}:?\d{0,2}\s*(am|pm)?\b/gi, '')
-      .replace(/\btomorrow\b/gi, '')
-      .replace(/\btoday\b/gi, '')
-      .replace(/\bmonday|tuesday|wednesday|thursday|friday|saturday|sunday\b/gi, '')
-      .replace(/\bnext week\b/gi, '')
-      .replace(/\bby\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi, '')
-      .trim();
-
-    // Capitalize first letter
-    cleanTitle = cleanTitle.charAt(0).toUpperCase() + cleanTitle.slice(1);
-
-    return {
-      title: cleanTitle.slice(0, 100),
-      notes: null,
-      due_date: dateInfo || getTodayDate(),
-      due_time: timeInfo || '20:00:00',
-      category: guessCategory(taskStr),
-    };
-  });
-
-  return {
-    tasks: parsedTasks,
-    summary: `Extracted ${parsedTasks.length} task(s) from your brain dump`,
-  };
-}
-
-// Improved time extraction
-// Improved time extraction
-function extractTimeFromText(text: string): string | null {
-  const lowerText = text.toLowerCase();
-  
-  // Pattern 1: "at 3pm", "at 3:30pm", "@3pm"
-  const pattern1 = /(?:at|@)\s*(\d{1,2}):?(\d{2})?\s*(am|pm)/i;
-  const match1 = lowerText.match(pattern1);
-  if (match1) {
-    let hours = parseInt(match1[1]);
-    const minutes = match1[2] || '00';
-    const meridiem = match1[3].toLowerCase();
-
-    if (meridiem === 'pm' && hours < 12) hours += 12;
-    if (meridiem === 'am' && hours === 12) hours = 0;
-
-    return `${hours.toString().padStart(2, '0')}:${minutes}:00`;
-  }
-
-  // Pattern 2: "3pm", "10am" (without "at")
-  const pattern2 = /\b(\d{1,2})\s*(am|pm)\b/i;
-  const match2 = lowerText.match(pattern2);
-  if (match2) {
-    let hours = parseInt(match2[1]);
-    const minutes = '00';
-    const meridiem = match2[2].toLowerCase();
-
-    if (meridiem === 'pm' && hours < 12) hours += 12;
-    if (meridiem === 'am' && hours === 12) hours = 0;
-
-      return `${hours.toString().padStart(2, '0')}:${minutes}:00`;
-    }
-
-  // Pattern 3: "15:00", "3:30" (24-hour or ambiguous)
-  const pattern3 = /\b(\d{1,2}):(\d{2})\b/i;
-  const match3 = lowerText.match(pattern3);
-  if (match3) {
-    let hours = parseInt(match3[1]);
-    const minutes = match3[2];
-
-    // If hours < 8 and no meridiem, assume PM
-    if (hours < 8 && hours > 0) hours += 12;
-
-    return `${hours.toString().padStart(2, '0')}:${minutes}:00`;
-  }
-
-  return null;
-}
-
-// Improved date extraction
-function extractDateFromText(text: string): string | null {
-  const lowerText = text.toLowerCase();
-  const today = new Date();
-
-  // Check for relative dates
-  if (lowerText.includes('today')) {
-    return getTodayDate();
-  }
-
-  if (lowerText.includes('tomorrow')) {
-    return getTomorrowDate();
-  }
-
-  // Check for "by Friday" or "on Friday" or just "Friday"
-  const dayOfWeekMatch = lowerText.match(/\b(?:by|on)?\s*(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i);
-  if (dayOfWeekMatch) {
-    const dayName = dayOfWeekMatch[1].toLowerCase();
-    const dayMap: { [key: string]: number } = {
-      sunday: 0, monday: 1, tuesday: 2, wednesday: 3,
-      thursday: 4, friday: 5, saturday: 6
-    };
-    return getNextDayOfWeek(dayMap[dayName]);
-  }
-
-  // Check for "next week"
-  if (lowerText.includes('next week')) {
-    const nextWeek = new Date(today);
-    nextWeek.setDate(today.getDate() + 7);
-    return nextWeek.toISOString().split('T')[0];
-  }
-
-  // Check for "this weekend"
-  if (lowerText.includes('weekend')) {
-    return getNextDayOfWeek(6); // Saturday
-  }
-
-  return null;
-}
-
-function guessCategory(text: string): string | null {
-  const lower = text.toLowerCase();
-
-  // Groceries and food purchases → Shopping (not Meals)
-  if (lower.match(/\b(groceries|grocery|milk|vegetables|fruits)\b/)) return 'Shopping';
-  if (lower.match(/\b(shop|buy|purchase|order|get|pick up)\b/)) return 'Shopping';
-  
-  // Meals / cooking
-  if (lower.match(/\b(cook|meal|dinner|lunch|breakfast|eat|recipe)\b/)) return 'Meals';
-  
-  // Bills and subscriptions
-  if (lower.match(/\b(pay|bill|payment|renew|renewal|insurance|subscription)\b/)) return 'Bills';
-  
-  // Admin / scheduling
-  if (lower.match(/\b(book|schedule|appointment|reserve)\b/)) return 'Admin';
-  
-  // Health actions
-  if (lower.match(/\b(take|vitamin|pill|supplement|medication)\b/)) return 'Health';
-  if (lower.match(/\b(doctor|dentist|checkup|medicine)\b/)) return 'Health';
-  
-  // Work
-  if (lower.match(/\b(submit|file|report|document|paperwork|expense)\b/)) return 'Work';
-  if (lower.match(/\b(work|project|meeting|deadline|client|email|presentation)\b/)) return 'Work';
-  
-  // Personal / social
-  if (lower.match(/\b(call|text|mom|dad|family|friend|visit|birthday)\b/)) return 'Personal';
-  
-  // Fitness
-  if (lower.match(/\b(gym|workout|exercise|run|jog|fitness|yoga|sport)\b/)) return 'Fitness';
-  
-  // Learning
-  if (lower.match(/\b(study|learn|read|course|book|homework)\b/)) return 'Learning';
-  
-  // Home
-  if (lower.match(/\b(clean|laundry|dishes|vacuum|organize)\b/)) return 'Home';
-
-  return 'Tasks';
-}
-
-function getTodayDate(): string {
-  return new Date().toISOString().split('T')[0];
-}
-
-function getTomorrowDate(): string {
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  return tomorrow.toISOString().split('T')[0];
-}
-
-function getNextDayOfWeek(targetDay: number): string {
-  const today = new Date();
-  const currentDay = today.getDay();
-  let daysUntil = targetDay - currentDay;
-  
-  // If target day is today or already passed this week, go to next week
-  if (daysUntil <= 0) {
-    daysUntil += 7;
-  }
-  
-  const nextDay = new Date(today);
-  nextDay.setDate(today.getDate() + daysUntil);
-  return nextDay.toISOString().split('T')[0];
-}

@@ -1,20 +1,17 @@
 "use client";
 
 import { useEffect, useState } from 'react';
-import { supabase } from '@/lib/supabaseClient';
 import { useAuth } from '@/components/AuthProvider';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { Card, Button } from '@/components/ui';
 import { trackTaskToggle } from '@/lib/analytics';
 import { useRouter } from 'next/navigation';
+import { getCurrentAppUser } from '@/lib/users/linking';
+import { executeTaskView } from '@/server/taskView/taskViewEngine';
+import { TaskViewTask } from '@/lib/taskView/contracts';
+import { supabase } from '@/lib/supabaseClient';
 
-interface TodayTask {
-  id: string;
-  title: string;
-  is_done: boolean;
-  due_time: string | null;
-  category: string | null;
-}
+type TodayTask = TaskViewTask;
 
 interface TodayMeal {
   slot: 'breakfast' | 'lunch' | 'dinner';
@@ -34,14 +31,14 @@ export default function HomePage() {
   const [loading, setLoading] = useState(true);
   const [groceryMissing, setGroceryMissing] = useState(0);
   const [isWhatsAppLinked, setIsWhatsAppLinked] = useState(true); // Default true to hide until we know
-
-  const today = new Date().toISOString().split('T')[0];
+  const [searchTerm, setSearchTerm] = useState('');
+  const [view, setView] = useState<'today' | 'upcoming'>('today');
 
   useEffect(() => {
     if (user) {
       fetchTodayData();
     }
-  }, [user]);
+  }, [user, searchTerm]);
 
   const fetchTodayData = async () => {
     try {
@@ -77,15 +74,27 @@ export default function HomePage() {
       setMeals(formattedMeals);
       */}
 
-      // Fetch today's tasks
-      const { data: tasksData } = await supabase
-        .from('tasks')
-        .select('id, title, is_done, due_time, category')
-        .eq('user_id', user?.id)
-        .eq('due_date', today)
-        .order('due_time', { ascending: true });
-
-      setTasks(tasksData || []);
+      const appUser = await getCurrentAppUser();
+      if (!appUser) {
+        setTasks([]);
+      } else {
+        const term = searchTerm.trim();
+        if (term) {
+          // [C4] Global search, independent of Today/Upcoming chip
+          const result = await executeTaskView({
+            identity: { kind: 'appUserId', appUserId: appUser.id },
+            view: 'search',
+            filters: { term },
+          });
+          setTasks(result.tasks as TodayTask[]);
+        } else {
+          const todayResult = await executeTaskView({
+            identity: { kind: 'appUserId', appUserId: appUser.id },
+            view: view === 'today' ? 'today' : 'upcoming',
+          });
+          setTasks(todayResult.tasks as TodayTask[]);
+        }
+      }
 
       {/* ============================================================================ */}
       {/* DISABLED FOR TASK-ONLY MVP: Grocery status fetching */}
@@ -168,9 +177,40 @@ export default function HomePage() {
             <h1 className="text-3xl md:text-4xl font-bold text-gray-900 dark:text-white mb-2">
               Hi {getUserName()} 👋
             </h1>
-            <p className="text-gray-600 dark:text-gray-400 text-lg">
+            <p className="text-gray-600 dark:text-gray-400 text-lg mb-3">
               Today at a glance
             </p>
+            <input
+              type="search"
+              placeholder="Search all tasks…"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full max-w-sm h-10 px-3 rounded-lg border border-gray-300 dark:border-gray-700 bg-gray-100 dark:bg-gray-800/50 text-gray-900 dark:text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <div className="mt-3 inline-flex rounded-full bg-gray-100 dark:bg-gray-800/60 p-1">
+              <button
+                type="button"
+                onClick={() => setView('today')}
+                className={`px-3 py-1 text-sm rounded-full ${
+                  view === 'today'
+                    ? 'bg-white dark:bg-gray-900 text-gray-900 dark:text-white shadow-sm'
+                    : 'text-gray-600 dark:text-gray-300'
+                }`}
+              >
+                Today
+              </button>
+              <button
+                type="button"
+                onClick={() => setView('upcoming')}
+                className={`ml-1 px-3 py-1 text-sm rounded-full ${
+                  view === 'upcoming'
+                    ? 'bg-white dark:bg-gray-900 text-gray-900 dark:text-white shadow-sm'
+                    : 'text-gray-600 dark:text-gray-300'
+                }`}
+              >
+                Upcoming
+              </button>
+            </div>
           </div>
 
           {loading ? (
@@ -219,8 +259,8 @@ export default function HomePage() {
                       >
                         <input
                           type="checkbox"
-                          checked={task.is_done}
-                          onChange={() => toggleTask(task.id, task.is_done)}
+                          checked={!!task.is_done}
+                          onChange={() => toggleTask(task.id, !!task.is_done)}
                           className="mt-0.5 h-5 w-5 rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-emerald-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-offset-gray-900 cursor-pointer flex-shrink-0 transition-colors"
                           aria-label={`Mark "${task.title}" as complete`}
                         />

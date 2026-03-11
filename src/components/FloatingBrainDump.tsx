@@ -6,6 +6,8 @@ import { useAuth } from './AuthProvider';
 import { useRouter } from 'next/navigation';
 import Toast from './Toast';
 import { trackDumpParse } from '@/lib/analytics';
+import { getCurrentAppUser } from '@/lib/users/linking';
+import { TASK_SOURCES } from '@/lib/taskSources';
 
 export default function FloatingBrainDump() {
   const { user } = useAuth();
@@ -104,66 +106,152 @@ export default function FloatingBrainDump() {
     }
   };
 
+  const LOG = '[BrainDump]';
+
+  // Task creation flow: parseDump (rules-only, no AI) → insert → success. Never waits on OpenAI.
   const handleSubmit = async () => {
     if (!content.trim() || !user) return;
-  
+
+    console.log(LOG, '1. Starting save', { textLength: content.trim().length, userId: user.id });
     setLoading(true);
     try {
+      console.log(LOG, '2. Getting session...');
+      const { data: { session } } = await supabase.auth.getSession();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (session?.access_token) {
+        headers['Authorization'] = `Bearer ${session.access_token}`;
+        console.log(LOG, '2. Session OK, sending Bearer token');
+      } else {
+        console.warn(LOG, '2. No session/access_token – API may return 401');
+      }
+
+      console.log(LOG, '3. Calling POST /api/parseDump...');
       const response = await fetch('/api/parseDump', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ text: content }),
       });
-  
+
+      console.log(LOG, '4. Response received', { status: response.status, ok: response.ok });
+
       if (!response.ok) {
+        const body = await response.text();
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(body);
+        } catch {
+          parsed = body;
+        }
+        console.error(LOG, '4. API error', { status: response.status, body: parsed });
         if (response.status === 429) {
-          const data = await response.json();
+          const data = typeof parsed === 'object' && parsed !== null && 'error' in parsed
+            ? (parsed as { error?: string })
+            : {};
           setToast(data.error || "Too many requests. Try again in a minute.");
           return;
         }
-        throw new Error('Failed to parse');
+        throw new Error(`Parse failed: ${response.status} ${body.slice(0, 200)}`);
       }
-  
+
       const { tasks, summary } = await response.json();
-  
-      const { error } = await supabase
-        .from('tasks')
-        .insert(
-          tasks.map((task: any) => ({
-            ...task,
-            user_id: user.id,
-            source: 'web',
-            is_done: false,
-            reminder_sent: false,
-          }))
-        );
-  
-      if (error) throw error;
-  
-      // Track brain dump parse with task count
-      trackDumpParse(tasks.length);
-  
+      console.log(LOG, '5. Parsed OK', { taskCount: tasks?.length, summary });
+
+      console.log(LOG, '6. Resolving app user...');
+      const appUser = await getCurrentAppUser();
+      const appUserId = appUser?.id ?? null;
+      console.log(LOG, '6. App user', appUserId ? { appUserId } : 'none (tasks will use user_id only)');
+
+      const proposedTasks = tasks.map((t: any) => ({
+        title: t.title,
+        due_date: t.due_date,
+        due_time: t.due_time,
+        category: t.category ?? 'Tasks',
+        inferred_date: !!t.inferred_date,
+        inferred_time: !!t.inferred_time,
+        rawCandidate: t.rawSegmentText ?? t.title,
+      }));
+
+      console.log(LOG, '7. Calling POST /api/tasks/import/confirm (insertTasksWithDedupe)...');
+      const insertRes = await fetch('/api/tasks/import/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+        body: JSON.stringify({
+          tasks: proposedTasks,
+          source: TASK_SOURCES.WEB_BRAIN_DUMP,
+          app_user_id: appUserId,
+        }),
+      });
+
+      if (!insertRes.ok) {
+        const errBody = await insertRes.text();
+        throw new Error(insertRes.status === 400 ? errBody : 'Insert failed');
+      }
+
+      const { inserted, duplicates } = await insertRes.json();
+      console.log(LOG, '7. Insert OK', { inserted: inserted?.length, duplicates: duplicates?.length });
+
+      trackDumpParse(inserted?.length ?? 0);
+
       setContent('');
       setTranscript('');
       setIsOpen(false);
-      
-      // Check if we're on tasks page and force reload
+
       const currentPath = window.location.pathname;
       if (currentPath === '/tasks') {
         window.location.reload();
       } else {
-      router.refresh();
+        router.refresh();
       }
-      
-      // Show toast notification
-      setTimeout(() => {
-        setToast(summary || `Created ${tasks.length} task(s)!`);
-      }, 100);
+
+      const insertedCount = Array.isArray(inserted) ? inserted.length : 0;
+      const dupCount = Array.isArray(duplicates) ? duplicates.length : 0;
+      const toastMsg = dupCount > 0
+        ? `Created ${insertedCount} task(s)${dupCount > 0 ? ` (${dupCount} duplicate(s) skipped)` : ''}.`
+        : (summary || `Created ${insertedCount} task(s)!`);
+      setTimeout(() => setToast(toastMsg), 100);
+      console.log(LOG, '8. Done – success');
+
+      // Fire-and-forget: refine in background; refresh list if any task was updated (failure-safe, non-blocking)
+      if (inserted?.length && session?.access_token) {
+        const dupSet = new Set((duplicates ?? []).map((d: { index: number }) => d.index));
+        const insertedIndices = tasks.map((_: any, i: number) => i).filter((i: number) => !dupSet.has(i));
+        const refinePayload = insertedIndices.slice(0, inserted.length).map((taskIdx: number, j: number) => ({
+          id: inserted[j]?.id,
+          rawSegmentText: tasks[taskIdx].rawSegmentText ?? '',
+          title: tasks[taskIdx].title,
+          due_date: tasks[taskIdx].due_date,
+          due_time: tasks[taskIdx].due_time,
+          category: tasks[taskIdx].category,
+          dueDateWasDefaulted: tasks[taskIdx].dueDateWasDefaulted,
+          dueTimeWasDefaulted: tasks[taskIdx].dueTimeWasDefaulted,
+        })).filter((r: any) => r.id);
+        if (refinePayload.length > 0) {
+          fetch('/api/refineTasks', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+            body: JSON.stringify({ tasks: refinePayload, fullDumpText: content.trim() || undefined }),
+          })
+            .then((res) => res.ok ? res.json() : null)
+            .then((body: any) => {
+              if (body?.refined && body?.updatedCount > 0) {
+                console.log(LOG, 'Refinement updated', body.updatedCount, 'task(s)');
+                router.refresh();
+              }
+            })
+            .catch(() => { /* failure-safe: no UI impact */ });
+        }
+      }
     } catch (error: any) {
-      console.error('Error saving brain dump:', error);
-      setToast("That didn\'t work - want to try again?");
+      console.error(LOG, 'Failed', {
+        message: error?.message,
+        code: error?.code,
+        details: error?.details,
+        stack: error?.stack?.split('\n').slice(0, 3),
+      });
+      setToast("That didn't work - want to try again?");
     } finally {
       setLoading(false);
+      console.log(LOG, '9. Loading cleared');
     }
   };
 

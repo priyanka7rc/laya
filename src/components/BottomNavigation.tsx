@@ -6,7 +6,7 @@ import { usePathname } from "next/navigation";
 const navItems = [
   { name: "Home", href: "/home", icon: "🏠" },
   { name: "Tasks", href: "/tasks", icon: "✅" },
-  { name: "Meal Plan", href: "/mealplan", icon: "📅" },
+  // { name: "Meal Plan", href: "/mealplan", icon: "📅" }, // DISABLED - Task-only MVP
   // { name: "Groceries", href: "/grocery", icon: "🛒" }, // DISABLED - Feature in development
   { name: "Activity", href: "/activity", icon: "📊" },
 ];

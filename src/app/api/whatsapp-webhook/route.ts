@@ -49,18 +49,36 @@ export async function GET(request: NextRequest) {
 // MESSAGE PROCESSING (POST)
 // ============================================
 
+/** Resolve Meta Cloud API media ID to a download URL (requires WHATSAPP_ACCESS_TOKEN). */
+async function getMetaMediaUrl(mediaId: string): Promise<string | null> {
+  const token = process.env.WHATSAPP_ACCESS_TOKEN;
+  if (!token) return null;
+  try {
+    const res = await fetch(`https://graph.facebook.com/v18.0/${mediaId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { url?: string };
+    return data.url ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * POST /api/whatsapp-webhook
  * Receives incoming WhatsApp messages
- * 
+ *
  * Message types supported:
  * - text
  * - audio (voice notes)
- * 
+ * - image (Gupshup: direct URL; Meta: resolve via Graph API)
+ * - document (Gupshup: direct URL; Meta: resolve via Graph API)
+ *
  * Flow:
  * 1. Extract message data
  * 2. Validate webhook signature (optional for MVP)
- * 3. Process message (transcribe audio, call Laya brain, save to DB)
+ * 3. Process message (transcribe audio, OCR media, or rules-first task creation)
  * 4. Send response back to user
  * 5. Return 200 quickly to avoid timeout
  */
@@ -104,33 +122,45 @@ export async function POST(request: NextRequest) {
       let audioId: string | null = null;
       let replyToMessage: string | null = null;
 
-      // Extract reply context if present
-      // Note: Gupshup context only provides message IDs (id, gsId), not message text
+      // Extract reply context if present.
+      // Gupshup provides the provider message ID in payload.context.gsId.
+      // We store this so handleTaskDelete can look up the replied-to message
+      // via messages.provider_message_id.
       if (payload.context && payload.context.gsId) {
-        console.log(`↩️ Reply to message ID: ${payload.context.gsId}`);
-        // Future: Query whatsapp_messages table using payload.context.gsId to get original text
+        replyToMessage = payload.context.gsId;
+        console.log(`↩️ Reply to provider message ID: ${payload.context.gsId}`);
       }
 
-      // Extract content based on message type
+      let mediaUrl: string | undefined;
+      let mediaMimeType: string | undefined;
+      let resolvedMessageType: 'text' | 'audio' | 'image' | 'document' = 'text';
+
       if (messageType === 'text' && payload.payload?.text) {
         content = payload.payload.text;
+        resolvedMessageType = 'text';
       } else if (messageType === 'audio' && payload.payload?.url) {
-        audioId = payload.payload.url; // Gupshup provides direct URL
+        audioId = payload.payload.url;
+        resolvedMessageType = 'audio';
+      } else if ((messageType === 'image' || messageType === 'file' || messageType === 'document') && payload.payload?.url) {
+        mediaUrl = payload.payload.url;
+        mediaMimeType = payload.payload.contentType;
+        resolvedMessageType = messageType === 'file' || messageType === 'document' ? 'document' : 'image';
       } else {
         console.log(`⚠️ Unsupported Gupshup message type: ${messageType}`);
         return NextResponse.json({ status: 'ok' }, { status: 200 });
       }
 
-      // Process message asynchronously
       processWhatsAppMessage({
         phoneNumber,
         messageId,
-        messageType: messageType === 'audio' ? 'audio' : 'text',
+        messageType: resolvedMessageType,
         content,
         audioId,
         timestamp,
         rawPayload: payload,
         replyToMessage: replyToMessage || undefined,
+        mediaUrl,
+        mediaMimeType,
       }).catch((error) => {
         console.error('❌ Error processing Gupshup message:', error);
       });
@@ -163,12 +193,13 @@ export async function POST(request: NextRequest) {
             const messageId = message.id;
             const timestamp = message.timestamp;
 
-            let messageType: 'text' | 'audio' = 'text';
+            let messageType: 'text' | 'audio' | 'image' | 'document' = 'text';
             let content: string | null = null;
             let audioId: string | null = null;
+            let mediaUrl: string | undefined;
+            let mediaMimeType: string | undefined;
             let replyToMessage: string | null = null;
 
-            // Extract reply context
             if (message.context && message.context.message) {
               replyToMessage = message.context.message;
               console.log(`↩️ Reply detected: "${replyToMessage}"`);
@@ -180,12 +211,31 @@ export async function POST(request: NextRequest) {
             } else if (message.type === 'audio' && message.audio) {
               messageType = 'audio';
               audioId = message.audio.url || message.audio.id;
+            } else if (message.type === 'image' && (message as any).image?.id) {
+              messageType = 'image';
+              const url = await getMetaMediaUrl((message as any).image.id);
+              if (url) {
+                mediaUrl = url;
+                mediaMimeType = (message as any).image.mime_type;
+              } else {
+                console.log('⚠️ Meta image: could not resolve media URL');
+                continue;
+              }
+            } else if (message.type === 'document' && (message as any).document?.id) {
+              messageType = 'document';
+              const url = await getMetaMediaUrl((message as any).document.id);
+              if (url) {
+                mediaUrl = url;
+                mediaMimeType = (message as any).document.mime_type;
+              } else {
+                console.log('⚠️ Meta document: could not resolve media URL');
+                continue;
+              }
             } else {
-              console.log(`⚠️ Unsupported Meta message type: ${message.type}`);
+              console.log(`⚠️ Unsupported Meta message type: ${(message as any).type}`);
               continue;
             }
 
-            // Process message asynchronously
             processWhatsAppMessage({
               phoneNumber,
               messageId,
@@ -195,6 +245,8 @@ export async function POST(request: NextRequest) {
               timestamp,
               rawPayload: message,
               replyToMessage: replyToMessage || undefined,
+              mediaUrl,
+              mediaMimeType,
             }).catch((error) => {
               console.error('❌ Error processing Meta message:', error);
             });

@@ -6,6 +6,7 @@
 
 import OpenAI from 'openai';
 import { z } from 'zod';
+import { getCategoryListForPrompt } from './categories';
 
 // ============================================
 // TYPE DEFINITIONS
@@ -149,7 +150,7 @@ Always return a JSON object with:
       "title": "string",
       "due_date": "YYYY-MM-DD or null",
       "due_time": "HH:MM or null",
-      "category": "Choose ONE from: Shopping, Work, Home, Health, Bills, Personal, Admin, or null. If none fit clearly, return null. Do NOT invent new categories. Do NOT return 'Brain Dump'. Do NOT return plural or lowercase variants"
+      "category": "Choose ONE from: " + getCategoryListForPrompt() + ", or null. If none fit clearly, return null. Do NOT invent new categories. Do NOT return 'Brain Dump'. Do NOT return plural or lowercase variants"
     }],
     "groceries": [{
       "item_name": "string",
