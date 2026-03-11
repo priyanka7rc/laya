@@ -129,13 +129,13 @@ export async function insertTasksWithDedupe(
     let inferredDate = !!task.inferred_date;
     let inferredTime = !!task.inferred_time;
 
-    let dueDate = task.due_date || todayStr;
+    const dueDate = task.due_date || todayStr;
     if (!task.due_date) {
       inferredDate = true;
     }
 
     const rawTime = task.due_time || DEFAULT_TASK_TIME;
-    let normalizedTime = toHHMM(rawTime) || DEFAULT_TASK_TIME;
+    const normalizedTime = toHHMM(rawTime) || DEFAULT_TASK_TIME;
     if (!task.due_time || toHHMM(task.due_time) == null) {
       inferredTime = true;
     }

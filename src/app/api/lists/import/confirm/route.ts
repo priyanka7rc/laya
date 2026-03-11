@@ -64,7 +64,7 @@ export async function POST(request: NextRequest) {
 
       const importCandidatesArray = normalizeImportCandidates(candidates);
       const importCandidates = importCandidatesArray.length
-        ? importCandidatesArray
+        ? importCandidatesArray.map((c) => c.text)
         : null;
 
       const result = await insertListWithIdempotency({

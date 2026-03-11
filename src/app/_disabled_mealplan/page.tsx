@@ -396,7 +396,7 @@ export default function MealPlanPage() {
       const selectedDate = new Date(selectedCell.day);
       const dayOfWeek = Math.floor((selectedDate.getTime() - monday.getTime()) / (1000 * 60 * 60 * 24));
   
-      let existing = getMealForSlot(selectedCell.day, selectedCell.slot);
+      const existing = getMealForSlot(selectedCell.day, selectedCell.slot);
       let mealPlanItemId = existing?.meal_plan_item_id;
       let mealPlateId = existing?.meal_plate_id;
 
@@ -423,7 +423,7 @@ export default function MealPlanPage() {
         await new Promise(resolve => setTimeout(resolve, 100));
 
         // Get the auto-created plate (or create manually as fallback)
-        let { data: plate, error: plateError } = await supabase
+        const { data: plate, error: plateError } = await supabase
           .from('meal_plates')
           .select('id')
           .eq('meal_plan_item_id', mealPlanItemId)

@@ -25,6 +25,7 @@ import { insertTasksWithDedupe } from '@/server/tasks/insertTasksWithDedupe';
 import { ocrTextToProposedTasks } from './ocrCandidates';
 import { buildOcrImportPreview } from '@/lib/ocr_import_preview';
 import { getOrCreateSystemList } from '@/server/lists/getOrCreateSystemList';
+import { insertListWithIdempotency } from '@/server/lists/insertListWithIdempotency';
 import { getOcrClient } from '@/server/ocr';
 import { TASK_SOURCES } from './taskSources';
 import { executeTaskView } from '@/server/taskView/taskViewEngine';
@@ -56,6 +57,7 @@ import {
   formatListPreview,
 } from '@/lib/waListReadParser';
 import {
+  type ListInfo,
   getUserLists,
   getListByName,
   deleteCompletedItems,
@@ -1973,7 +1975,7 @@ async function handleListRead(
         providerMessageId: sendResult?.providerMessageId,
       });
     } else {
-      const list = result;
+      const list = result as ListInfo;
       const items = await getListItems(list.id);
       const msg = formatListPreview(
         list.name,
@@ -2497,8 +2499,8 @@ async function handleTaskQuery(
     const msgKind = searchTerm ? 'search_results' : 'task_list';
 
     // Send first, capture provider ID, then persist with task_ids for reply-based delete
-    const providerMsgId = await sendWhatsAppMessage(phoneNumber, message);
-    await saveOutboundMessage({ userId, content: message, taskIds, kind: msgKind, providerMessageId: providerMsgId ?? undefined });
+    const sendResult = await sendWhatsAppMessage(phoneNumber, message);
+    await saveOutboundMessage({ userId, content: message, taskIds, kind: msgKind, providerMessageId: sendResult?.providerMessageId ?? undefined });
     console.log(
       `[WA] Result: query returned ${viewResult.tasks.length} tasks | ` +
       `category=${categoryFilter || 'all'} | date=${dateFilter || 'all'}`

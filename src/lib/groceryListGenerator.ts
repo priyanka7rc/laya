@@ -291,7 +291,7 @@ type NormalizationResult = {
 function tryRuleBasedNormalization(ingredient: RawIngredient): NormalizationResult {
   const name = (ingredient.name || '').toLowerCase().trim();
   const unit = (ingredient.unit || '').toLowerCase().trim();
-  let qty = typeof ingredient.qty === 'number' ? ingredient.qty : parseFloat(String(ingredient.qty)) || 0;
+  const qty = typeof ingredient.qty === 'number' ? ingredient.qty : parseFloat(String(ingredient.qty)) || 0;
   
   if (qty === 0) {
     return { success: false, reason: 'MISSING_QUANTITY' };

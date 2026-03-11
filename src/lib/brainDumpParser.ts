@@ -29,13 +29,13 @@ export function splitBrainDump(text: string): string[] {
   if (!trimmed.length) return [];
 
   // Normalize bullets and newlines to a single split token, then split
-  let normalized = trimmed
+  const normalized = trimmed
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
     .replace(/^[\s]*[•\-*]\s+/gm, '\n')
     .replace(/^[\s]*\d+[.)]\s+/gm, '\n');
 
-  let segments = normalized
+  const segments = normalized
     .split(/[,;\n]+/)
     .map((s) => s.trim())
     .filter((s) => s.length > 0);

@@ -14,28 +14,20 @@ export function normalizeImportCandidates(input: unknown): ImportCandidate[] {
   if (!input) return [];
 
   if (Array.isArray(input)) {
-    return input
-      .map((c) => {
-        if (typeof c === 'string') {
-          return {
-            text: c,
-            classification: 'list' as const,
-            sourceLine: null,
-          };
-        }
-        if (c && typeof c === 'object' && 'text' in c) {
-          const obj = c as any;
-          return {
-            text: String(obj.text),
-            classification:
-              (obj.classification as ImportCandidateClassification) ?? 'list',
-            sourceLine:
-              typeof obj.sourceLine === 'number' ? obj.sourceLine : null,
-          };
-        }
-        return null;
-      })
-      .filter((x): x is ImportCandidate => x !== null);
+    return input.flatMap((c): ImportCandidate[] => {
+      if (typeof c === 'string') {
+        return [{ text: c, classification: 'list', sourceLine: null }];
+      }
+      if (c && typeof c === 'object' && 'text' in c) {
+        const obj = c as { text: unknown; classification?: unknown; sourceLine?: unknown };
+        return [{
+          text: String(obj.text),
+          classification: (obj.classification as ImportCandidateClassification) ?? 'list',
+          sourceLine: typeof obj.sourceLine === 'number' ? obj.sourceLine : null,
+        }];
+      }
+      return [];
+    });
   }
 
   return [];

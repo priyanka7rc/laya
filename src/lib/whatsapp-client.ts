@@ -224,7 +224,8 @@ export async function sendWhatsAppMessageWithFallback(options: {
         `[WA] Safety: ALLOW free-form | userId=${userId} | ` +
         `reason=within_24h_window`
       );
-      return await sendWhatsAppMessage(phoneNumber, message);
+      const result = await sendWhatsAppMessage(phoneNumber, message);
+      return result?.providerMessageId ?? null;
     } else {
       // Outside 24 hours - require template
       if (!templateId) {
