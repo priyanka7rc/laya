@@ -248,7 +248,7 @@ export async function queryUpcomingTasks(
     // and up to and including windowEndISO (e.g. now+48h), based on due_at.
     .gt('due_at', windowStartISO)
     .lte('due_at', windowEndISO)
-    .neq('due_at', null)
+    .not('due_at', 'is', null)
     .order('due_at', { ascending: true, nullsFirst: false })
     .order('created_at', { ascending: true });
 

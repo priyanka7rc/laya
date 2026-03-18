@@ -8,6 +8,7 @@ export interface AppUser {
   onboarding_state: string;
   has_app_account: boolean;
   timezone?: string | null;
+  display_name?: string | null;
 }
 
 export async function linkAuthUserToAppUser(params: {

@@ -30,7 +30,7 @@ export function ConfirmInferenceBadge({
     <button
       type="button"
       onClick={handleClick}
-      className="inline-flex items-center justify-center gap-1 min-h-[32px] px-2.5 py-1.5 rounded text-xs font-medium bg-amber-100 dark:bg-amber-900/30 border border-amber-300 dark:border-amber-700/50 text-amber-800 dark:text-amber-200 hover:bg-amber-200 dark:hover:bg-amber-900/50 transition-colors"
+      className="inline-flex items-center justify-center gap-1 min-h-[32px] px-2.5 py-1.5 rounded-md text-xs font-medium bg-warning/20 border border-warning/40 text-foreground hover:bg-warning/30 transition-colors"
       aria-label="Confirm inferred schedule"
     >
       {label}

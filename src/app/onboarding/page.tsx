@@ -6,8 +6,6 @@ import ProtectedRoute from "@/components/ProtectedRoute";
 import { getCurrentAppUser } from "@/lib/users/linking";
 import { supabase } from "@/lib/supabaseClient";
 
-type FocusArea = "work" | "home" | "kids" | "other" | null;
-
 export default function OnboardingPage() {
   return (
     <ProtectedRoute>
@@ -19,7 +17,8 @@ export default function OnboardingPage() {
 function OnboardingInner() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
-  const [focus, setFocus] = useState<FocusArea>(null);
+  const [saving, setSaving] = useState(false);
+  const [displayName, setDisplayName] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -39,6 +38,11 @@ function OnboardingInner() {
         return;
       }
 
+      // Pre-fill if name already saved
+      if (appUser.display_name) {
+        setDisplayName(appUser.display_name);
+      }
+
       setLoading(false);
     })();
 
@@ -47,9 +51,9 @@ function OnboardingInner() {
     };
   }, [router]);
 
-  const updateStateAndContinue = async (nextState: "onboarding_complete") => {
+  const handleSave = async (nameToSave: string) => {
     setError(null);
-    setLoading(true);
+    setSaving(true);
 
     const appUser = await getCurrentAppUser();
     if (!appUser) {
@@ -60,27 +64,19 @@ function OnboardingInner() {
     const { error: updateError } = await supabase
       .from("app_users")
       .update({
-        onboarding_state: nextState,
+        onboarding_state: "onboarding_complete",
+        ...(nameToSave.trim() ? { display_name: nameToSave.trim() } : {}),
       })
       .eq("id", appUser.id);
 
     if (updateError) {
       console.error("[onboarding] update error", updateError);
       setError("Could not save. Please try again.");
-      setLoading(false);
+      setSaving(false);
       return;
     }
 
     router.replace("/onboarding/first-task");
-  };
-
-  const handleSkip = async () => {
-    await updateStateAndContinue("onboarding_complete");
-  };
-
-  const handleSave = async () => {
-    // For now we just persist onboarding_state; focus area can later be stored in meta/settings.
-    await updateStateAndContinue("onboarding_complete");
   };
 
   if (loading) {
@@ -92,50 +88,53 @@ function OnboardingInner() {
   }
 
   return (
-    <main className="min-h-screen flex flex-col px-4 py-8">
-      <div className="w-full max-w-md mx-auto space-y-6">
-        <h1 className="text-2xl font-semibold">Set a few defaults</h1>
-        <p className="text-sm text-gray-600">
-          This helps Laya prioritise what matters. You can change this later.
-        </p>
-
-        <section className="space-y-3">
-          <p className="text-sm font-medium">I mostly use Laya for:</p>
-          <div className="flex flex-wrap gap-2">
-            {[
-              { id: "work", label: "Work" },
-              { id: "home", label: "Home" },
-              { id: "kids", label: "Kids" },
-              { id: "other", label: "Other" },
-            ].map((opt) => (
-              <button
-                key={opt.id}
-                type="button"
-                onClick={() => setFocus(opt.id as FocusArea)}
-                className={`px-3 py-1 rounded border text-sm ${
-                  focus === opt.id ? "bg-black text-white" : "bg-white"
-                }`}
-              >
-                {opt.label}
-              </button>
-            ))}
+    <main className="min-h-screen flex flex-col items-center justify-center px-4 py-8 bg-background">
+      <div className="w-full max-w-sm space-y-8">
+        {/* Logo */}
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-12 h-12 rounded-xl bg-primary/20 flex items-center justify-center text-primary font-bold text-xl select-none">
+            L
           </div>
-        </section>
+          <h1 className="text-2xl font-semibold text-foreground">Welcome to Laya</h1>
+          <p className="text-sm text-muted-foreground text-center">
+            What should we call you?
+          </p>
+        </div>
 
-        {error && <p className="text-sm text-red-500">{error}</p>}
+        {/* Name input */}
+        <div className="space-y-2">
+          <input
+            type="text"
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && displayName.trim()) {
+                handleSave(displayName);
+              }
+            }}
+            placeholder="Your first name"
+            maxLength={50}
+            autoFocus
+            className="w-full px-4 py-3 rounded-xl border border-border bg-card text-foreground text-base placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
+          />
+        </div>
+
+        {error && <p className="text-sm text-destructive">{error}</p>}
 
         <div className="space-y-3">
           <button
             type="button"
-            onClick={handleSave}
-            className="w-full bg-black text-white py-2 rounded"
+            onClick={() => handleSave(displayName)}
+            disabled={saving || !displayName.trim()}
+            className="w-full bg-primary text-primary-foreground py-3 rounded-xl font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:bg-primary/90 transition-colors"
           >
-            Continue
+            {saving ? "Saving…" : "Continue"}
           </button>
           <button
             type="button"
-            onClick={handleSkip}
-            className="w-full border border-gray-300 py-2 rounded text-sm"
+            onClick={() => handleSave("")}
+            disabled={saving}
+            className="w-full text-sm text-muted-foreground py-2 hover:text-foreground transition-colors"
           >
             Skip for now
           </button>

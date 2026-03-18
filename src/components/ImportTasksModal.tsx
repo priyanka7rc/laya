@@ -138,7 +138,7 @@ export function ImportTasksModal({ isOpen, onClose, onSuccess, getToken, toast }
       setConfirmResult({ inserted, duplicates });
       setStep('done');
       onSuccess();
-      if (inserted > 0) toast.success(`${inserted} task(s) added`);
+      if (inserted > 0) toast.success("Import complete");
       if (duplicates > 0) toast.info(`${duplicates} skipped (duplicate)`);
     } catch (err) {
       console.error(err);

@@ -8,6 +8,7 @@ import type { NextRequest } from 'next/server';
  * PROD: Normal caching for performance.
  */
 export function middleware(request: NextRequest) {
+  const start = Date.now();
   const response = NextResponse.next();
 
   // DEV ONLY: Disable HTTP caching to always get fresh builds
@@ -18,6 +19,14 @@ export function middleware(request: NextRequest) {
     );
     response.headers.set('Pragma', 'no-cache');
     response.headers.set('Expires', '0');
+  }
+
+  // Log API requests so activity is visible in the terminal
+  if (request.nextUrl.pathname.startsWith('/api/')) {
+    const duration = Date.now() - start;
+    console.log(
+      `[API] ${request.method} ${request.nextUrl.pathname} (${duration}ms)`
+    );
   }
 
   // NOTE: For now we rely on client-side AuthProvider + ProtectedRoute

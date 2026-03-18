@@ -12,9 +12,10 @@ interface TaskFormProps {
   onSuccess?: () => void;
   onError?: (error: string) => void;
   editTask?: any;
+  panelMode?: boolean;
 }
 
-export default function TaskForm({ onSuccess, onError, editTask }: TaskFormProps) {
+export default function TaskForm({ onSuccess, onError, editTask, panelMode }: TaskFormProps) {
   const { user } = useAuth();
   const [title, setTitle] = useState(editTask?.title || '');
   const [notes, setNotes] = useState(editTask?.notes || '');
@@ -154,55 +155,148 @@ export default function TaskForm({ onSuccess, onError, editTask }: TaskFormProps
     }
   };
 
+  const inputBase = "w-full h-11 px-4 py-2 text-base bg-card border rounded-xl text-foreground placeholder-muted-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 transition-colors";
+
+  if (panelMode) {
+    return (
+      <form
+        id="desktop-edit-form"
+        onSubmit={handleSubmit}
+        className="p-4 space-y-4"
+      >
+        {/* Title — transparent textarea */}
+        <div>
+          <textarea
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Task title..."
+            maxLength={120}
+            rows={2}
+            className={`w-full bg-transparent border-none focus:outline-none focus:ring-0 text-lg text-foreground placeholder-muted-foreground resize-none min-h-[60px] ${
+              validationErrors.title ? 'placeholder-destructive' : ''
+            }`}
+          />
+          {validationErrors.title && (
+            <p className="mt-1 text-xs text-destructive">⚠ {validationErrors.title}</p>
+          )}
+        </div>
+
+        {/* Due Date — property row */}
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-muted/50 flex items-center justify-center text-muted-foreground flex-shrink-0">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+              <line x1="16" y1="2" x2="16" y2="6" />
+              <line x1="8" y1="2" x2="8" y2="6" />
+              <line x1="3" y1="10" x2="21" y2="10" />
+            </svg>
+          </div>
+          <input
+            type="date"
+            value={dueDate}
+            onChange={(e) => setDueDate(e.target.value)}
+            className="flex-1 border border-border rounded-lg px-3 py-1.5 text-sm bg-card text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+          />
+        </div>
+
+        {/* Due Time — property row */}
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-muted/50 flex items-center justify-center text-muted-foreground flex-shrink-0">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <circle cx="12" cy="12" r="10" />
+              <polyline points="12 6 12 12 16 14" />
+            </svg>
+          </div>
+          <input
+            type="time"
+            value={dueTime}
+            onChange={(e) => setDueTime(e.target.value)}
+            className="flex-1 border border-border rounded-lg px-3 py-1.5 text-sm bg-card text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+          />
+        </div>
+
+        {/* Category — property row */}
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-muted/50 flex items-center justify-center text-muted-foreground flex-shrink-0">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z" />
+              <line x1="7" y1="7" x2="7.01" y2="7" />
+            </svg>
+          </div>
+          <input
+            type="text"
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+            placeholder="Category"
+            maxLength={50}
+            className="flex-1 border border-border rounded-lg px-3 py-1.5 text-sm bg-card text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+          />
+        </div>
+
+        {/* Notes */}
+        <textarea
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          rows={4}
+          placeholder="Add notes..."
+          maxLength={500}
+          className="w-full bg-muted/30 rounded-xl p-3 text-sm text-foreground placeholder-muted-foreground resize-none min-h-[120px] border-none focus:outline-none focus:ring-0"
+        />
+
+        {/* Hidden submit (triggered externally via form.requestSubmit()) */}
+        <button type="submit" className="hidden" aria-hidden />
+      </form>
+    );
+  }
+
   return (
-    <form onSubmit={handleSubmit} className="bg-gray-900 border border-gray-800 rounded-lg p-4 space-y-4">
+    <form onSubmit={handleSubmit} className="bg-card border border-border rounded-2xl p-4 space-y-4">
       {/* Title Field */}
       <div>
-        <label className="block text-sm font-medium text-gray-300 mb-2">
+        <label className="block text-sm font-medium text-foreground mb-2">
           Task Title *
         </label>
         <input
           type="text"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
-          className={`w-full h-11 px-4 py-2 text-base bg-gray-800 border rounded-2xl text-white placeholder-gray-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-black transition-colors ${
+          className={`${inputBase} ${
             validationErrors.title 
-              ? 'border-red-500 focus-visible:ring-red-500' 
-              : 'border-gray-700 focus-visible:ring-blue-500'
+              ? 'border-destructive focus-visible:ring-destructive' 
+              : 'border-border focus-visible:ring-primary'
           }`}
           placeholder="What do you need to do?"
           maxLength={120}
         />
-        {/* ← Inline error */}
         {validationErrors.title && (
-          <p className="mt-1 text-sm text-red-400 flex items-center gap-1">
+          <p className="mt-1 text-sm text-destructive flex items-center gap-1">
             <span>⚠</span> {validationErrors.title}
           </p>
         )}
-        <p className="mt-1 text-xs text-gray-500">
+        <p className="mt-1 text-xs text-muted-foreground">
           {title.length}/120 characters
         </p>
       </div>
 
       {/* Notes Field */}
       <div>
-        <label className="block text-sm font-medium text-gray-300 mb-2">
+        <label className="block text-sm font-medium text-foreground mb-2">
           Notes
         </label>
         <textarea
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
           rows={3}
-          className={`w-full px-4 py-3 text-base bg-gray-800 border rounded-2xl text-white placeholder-gray-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-black resize-none transition-colors ${
+          className={`w-full px-4 py-3 text-base bg-card border rounded-xl text-foreground placeholder-muted-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 resize-none transition-colors ${
             validationErrors.notes
-              ? 'border-red-500 focus-visible:ring-red-500'
-              : 'border-gray-700 focus-visible:ring-blue-500'
+              ? 'border-destructive focus-visible:ring-destructive'
+              : 'border-border focus-visible:ring-primary'
           }`}
           placeholder="Additional details..."
           maxLength={500}
         />
         {validationErrors.notes && (
-          <p className="mt-1 text-sm text-red-400 flex items-center gap-1">
+          <p className="mt-1 text-sm text-destructive flex items-center gap-1">
             <span>⚠</span> {validationErrors.notes}
           </p>
         )}
@@ -210,23 +304,23 @@ export default function TaskForm({ onSuccess, onError, editTask }: TaskFormProps
 
       {/* Category Field */}
       <div>
-        <label className="block text-sm font-medium text-gray-300 mb-2">
-            Category
-          </label>
+        <label className="block text-sm font-medium text-foreground mb-2">
+          Category
+        </label>
         <input
           type="text"
           value={category}
           onChange={(e) => setCategory(e.target.value)}
-          className={`w-full h-11 px-4 py-2 text-base bg-gray-800 border rounded-2xl text-white placeholder-gray-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-black transition-colors ${
+          className={`${inputBase} ${
             validationErrors.category
-              ? 'border-red-500 focus-visible:ring-red-500'
-              : 'border-gray-700 focus-visible:ring-blue-500'
+              ? 'border-destructive focus-visible:ring-destructive'
+              : 'border-border focus-visible:ring-primary'
           }`}
           placeholder="e.g., Work, Personal, Shopping"
           maxLength={50}
         />
         {validationErrors.category && (
-          <p className="mt-1 text-sm text-red-400 flex items-center gap-1">
+          <p className="mt-1 text-sm text-destructive flex items-center gap-1">
             <span>⚠</span> {validationErrors.category}
           </p>
         )}
@@ -235,42 +329,42 @@ export default function TaskForm({ onSuccess, onError, editTask }: TaskFormProps
       {/* Due Date & Time */}
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <label className="block text-sm font-medium text-gray-300 mb-2">
+          <label className="block text-sm font-medium text-foreground mb-2">
             Due Date
           </label>
           <input
             type="date"
             value={dueDate}
             onChange={(e) => setDueDate(e.target.value)}
-            className={`w-full h-11 px-4 py-2 text-base bg-gray-800 border rounded-2xl text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-black transition-colors ${
+            className={`${inputBase} ${
               validationErrors.due_date
-                ? 'border-red-500 focus-visible:ring-red-500'
-                : 'border-gray-700 focus-visible:ring-blue-500'
+                ? 'border-destructive focus-visible:ring-destructive'
+                : 'border-border focus-visible:ring-primary'
             }`}
           />
           {validationErrors.due_date && (
-            <p className="mt-1 text-xs text-red-400 flex items-center gap-1">
+            <p className="mt-1 text-xs text-destructive flex items-center gap-1">
               <span>⚠</span> {validationErrors.due_date}
             </p>
           )}
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-gray-300 mb-2">
+          <label className="block text-sm font-medium text-foreground mb-2">
             Due Time
           </label>
           <input
             type="time"
             value={dueTime}
             onChange={(e) => setDueTime(e.target.value)}
-            className={`w-full h-11 px-4 py-2 text-base bg-gray-800 border rounded-2xl text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-black transition-colors ${
+            className={`${inputBase} ${
               validationErrors.due_time
-                ? 'border-red-500 focus-visible:ring-red-500'
-                : 'border-gray-700 focus-visible:ring-blue-500'
+                ? 'border-destructive focus-visible:ring-destructive'
+                : 'border-border focus-visible:ring-primary'
             }`}
           />
           {validationErrors.due_time && (
-            <p className="mt-1 text-xs text-red-400 flex items-center gap-1">
+            <p className="mt-1 text-xs text-destructive flex items-center gap-1">
               <span>⚠</span> {validationErrors.due_time}
             </p>
           )}
@@ -279,13 +373,13 @@ export default function TaskForm({ onSuccess, onError, editTask }: TaskFormProps
 
       {/* Submit Button */}
       <div className="flex gap-2 pt-2">
-      <button
-        type="submit"
+        <button
+          type="submit"
           disabled={loading || !title.trim()}
-          className="flex-1 h-11 min-w-[120px] px-6 bg-blue-600 text-white text-base font-medium rounded-2xl hover:bg-blue-700 active:bg-blue-800 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 focus-visible:ring-offset-black transition-colors"
-      >
-        {loading ? 'Saving...' : editTask ? 'Update Task' : 'Add Task'}
-      </button>
+          className="flex-1 h-11 min-w-[120px] px-6 bg-primary text-primary-foreground text-base font-medium rounded-xl hover:bg-primary/90 active:bg-primary/80 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 transition-colors"
+        >
+          {loading ? 'Saving...' : editTask ? 'Save Changes' : 'Add Task'}
+        </button>
       </div>
     </form>
   );

@@ -1,400 +1,509 @@
 "use client";
 
-import { useEffect, useState } from 'react';
-import { useAuth } from '@/components/AuthProvider';
-import ProtectedRoute from '@/components/ProtectedRoute';
-import { Card, Button } from '@/components/ui';
-import { trackTaskToggle } from '@/lib/analytics';
-import { useRouter } from 'next/navigation';
-import { getCurrentAppUser } from '@/lib/users/linking';
-import { executeTaskView } from '@/server/taskView/taskViewEngine';
-import { TaskViewTask } from '@/lib/taskView/contracts';
-import { supabase } from '@/lib/supabaseClient';
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { useAuth } from "@/components/AuthProvider";
+import ProtectedRoute from "@/components/ProtectedRoute";
+import { Card } from "@/components/ui";
+import { trackTaskToggle } from "@/lib/analytics";
+import { useRouter } from "next/navigation";
+import { getCurrentAppUser } from "@/lib/users/linking";
+import { executeTaskView } from "@/server/taskView/taskViewEngine";
+import { TaskViewTask } from "@/lib/taskView/contracts";
+import type { ListViewList } from "@/lib/listView/contracts";
+import { supabase } from "@/lib/supabaseClient";
+import {
+  MessageSquare,
+  ChevronRight,
+  emojiForListName,
+} from "@/components/Icons";
 
 type TodayTask = TaskViewTask;
 
-interface TodayMeal {
-  slot: 'breakfast' | 'lunch' | 'dinner';
-  recipe_title: string | null;
-}
+function getUpcomingBuckets(tasks: TodayTask[]) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const nextMonday = new Date(today);
+  const dayOfWeek = today.getDay();
+  const daysUntilMonday = dayOfWeek === 0 ? 1 : dayOfWeek === 6 ? 2 : 8 - dayOfWeek;
+  nextMonday.setDate(today.getDate() + daysUntilMonday);
+  const nextSunday = new Date(nextMonday);
+  nextSunday.setDate(nextSunday.getDate() + 6);
 
-interface MealPlanData {
-  slot: string;
-  recipes: { title: string } | null;
+  let tomorrowCount = 0;
+  let weekendCount = 0;
+  let nextWeekCount = 0;
+
+  for (const t of tasks) {
+    if (!t.due_date || t.is_done) continue;
+    const d = new Date(t.due_date);
+    d.setHours(0, 0, 0, 0);
+    if (d.getTime() === tomorrow.getTime()) tomorrowCount++;
+    else if (d >= nextMonday && d <= nextSunday) weekendCount++;
+    else if (d > tomorrow) nextWeekCount++;
+  }
+  const thisWeekCount = weekendCount + nextWeekCount;
+
+  return { tomorrowCount, weekendCount, nextWeekCount, thisWeekCount };
 }
 
 export default function HomePage() {
   const { user } = useAuth();
   const router = useRouter();
-  const [meals, setMeals] = useState<TodayMeal[]>([]);
-  const [tasks, setTasks] = useState<TodayTask[]>([]);
+  const [todayTasks, setTodayTasks] = useState<TodayTask[]>([]);
+  const [upcomingTasks, setUpcomingTasks] = useState<TodayTask[]>([]);
+  const [lists, setLists] = useState<ListViewList[]>([]);
   const [loading, setLoading] = useState(true);
-  const [groceryMissing, setGroceryMissing] = useState(0);
-  const [isWhatsAppLinked, setIsWhatsAppLinked] = useState(true); // Default true to hide until we know
-  const [searchTerm, setSearchTerm] = useState('');
-  const [view, setView] = useState<'today' | 'upcoming'>('today');
+  const [isWhatsAppLinked, setIsWhatsAppLinked] = useState(true);
+  const [displayName, setDisplayName] = useState<string>("");
 
   useEffect(() => {
-    if (user) {
-      fetchTodayData();
-    }
-  }, [user, searchTerm]);
+    if (user) fetchTodayData();
+  }, [user]);
 
   const fetchTodayData = async () => {
     try {
-      // Check if WhatsApp is linked
       const { data: whatsappData } = await supabase
-        .from('whatsapp_users')
-        .select('auth_user_id')
-        .eq('auth_user_id', user?.id)
+        .from("whatsapp_users")
+        .select("auth_user_id")
+        .eq("auth_user_id", user?.id)
         .maybeSingle();
-      
+
       setIsWhatsAppLinked(!!whatsappData);
-
-      {/* ============================================================================ */}
-      {/* DISABLED FOR TASK-ONLY MVP: Meal plan fetching */}
-      {/* To re-enable: Uncomment this section */}
-      {/* ============================================================================ */}
-      {/*
-      // Fetch today's meals
-      const { data: mealsData } = await supabase
-        .from('mealplanslots')
-        .select(`slot, recipes (title)`)
-        .eq('user_id', user?.id)
-        .eq('day', today) as { data: MealPlanData[] | null };
-
-      const formattedMeals = ['breakfast', 'lunch', 'dinner'].map(slot => {
-        const meal = mealsData?.find(m => m.slot === slot);
-        return {
-          slot: slot as 'breakfast' | 'lunch' | 'dinner',
-          recipe_title: meal?.recipes?.title || null,
-        };
-      });
-
-      setMeals(formattedMeals);
-      */}
 
       const appUser = await getCurrentAppUser();
       if (!appUser) {
-        setTasks([]);
-      } else {
-        const term = searchTerm.trim();
-        if (term) {
-          // [C4] Global search, independent of Today/Upcoming chip
-          const result = await executeTaskView({
-            identity: { kind: 'appUserId', appUserId: appUser.id },
-            view: 'search',
-            filters: { term },
-          });
-          setTasks(result.tasks as TodayTask[]);
-        } else {
-          const todayResult = await executeTaskView({
-            identity: { kind: 'appUserId', appUserId: appUser.id },
-            view: view === 'today' ? 'today' : 'upcoming',
-          });
-          setTasks(todayResult.tasks as TodayTask[]);
-        }
+        setTodayTasks([]);
+        setUpcomingTasks([]);
+        setLists([]);
+        return;
       }
 
-      {/* ============================================================================ */}
-      {/* DISABLED FOR TASK-ONLY MVP: Grocery status fetching */}
-      {/* To re-enable: Uncomment this section */}
-      {/* ============================================================================ */}
-      {/*
-      // Fetch grocery status
-      const monday = getMonday();
-      const { count } = await supabase
-        .from('grocerylistitems')
-        .select('*', { count: 'exact', head: true })
-        .eq('user_id', user?.id)
-        .eq('source_week', monday)
-        .eq('is_checked', false);
+      // Set display name from app user record
+      if (appUser.display_name) {
+        setDisplayName(appUser.display_name);
+      } else if (user?.email) {
+        // Fallback: derive from email prefix
+        const part = user.email.split("@")[0];
+        setDisplayName(part.charAt(0).toUpperCase() + part.slice(1));
+      }
 
-      setGroceryMissing(count || 0);
-      */}
-    } catch (err: any) {
-      console.error('Error fetching today data:', err);
+      const [todayResult, upcomingResult] = await Promise.all([
+        executeTaskView({
+          identity: { kind: "appUserId", appUserId: appUser.id },
+          view: "today",
+        }),
+        executeTaskView({
+          identity: { kind: "appUserId", appUserId: appUser.id },
+          view: "upcoming",
+        }),
+      ]);
+      setTodayTasks(todayResult.tasks as TodayTask[]);
+      setUpcomingTasks(upcomingResult.tasks as TodayTask[]);
+
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const res = await fetch(`/api/lists/view?limit=3`, {
+          headers: session?.access_token
+            ? { Authorization: `Bearer ${session.access_token}` }
+            : {},
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && Array.isArray(data.lists)) {
+          setLists(data.lists);
+        } else {
+          setLists([]);
+        }
+      } catch {
+        setLists([]);
+      }
+    } catch (err) {
+      console.error("Error fetching today data:", err);
     } finally {
       setLoading(false);
     }
   };
 
-  function getMonday() {
-    const today = new Date();
-    const day = today.getDay();
-    const diff = day === 0 ? -6 : 1 - day;
-    const monday = new Date(today);
-    monday.setDate(today.getDate() + diff);
-    return monday.toISOString().split('T')[0];
-  }
-
   const toggleTask = async (taskId: string, currentStatus: boolean) => {
-    setTasks(tasks.map(task =>
-      task.id === taskId ? { ...task, is_done: !currentStatus } : task
-    ));
+    const updater = (prev: TodayTask[]) =>
+      prev.map((t) =>
+        t.id === taskId ? { ...t, is_done: !currentStatus } : t
+      );
+    setTodayTasks(updater);
+    setUpcomingTasks(updater);
 
     try {
       const { error } = await supabase
-        .from('tasks')
+        .from("tasks")
         .update({ is_done: !currentStatus })
-        .eq('id', taskId);
+        .eq("id", taskId);
 
       if (error) throw error;
       trackTaskToggle(taskId, !currentStatus);
-    } catch (err: any) {
-      console.error('Error updating task:', err);
-      setTasks(tasks.map(task =>
-        task.id === taskId ? { ...task, is_done: currentStatus } : task
-      ));
+    } catch (err) {
+      console.error("Error updating task:", err);
+      const revert = (prev: TodayTask[]) =>
+        prev.map((t) =>
+          t.id === taskId ? { ...t, is_done: currentStatus } : t
+        );
+      setTodayTasks(revert);
+      setUpcomingTasks(revert);
     }
   };
 
   const formatTime = (timeString: string | null) => {
-    if (!timeString) return '';
-    const [hours, minutes] = timeString.split(':');
-    const hour = parseInt(hours);
-    const ampm = hour >= 12 ? 'PM' : 'AM';
+    if (!timeString) return "";
+    const [hours, minutes] = timeString.split(":");
+    const hour = parseInt(hours, 10);
+    const ampm = hour >= 12 ? "PM" : "AM";
     const displayHour = hour % 12 || 12;
     return `${displayHour}:${minutes} ${ampm}`;
   };
 
-  const getUserName = () => {
-    const email = user?.email || '';
-    const name = email.split('@')[0];
-    // Capitalize first letter
-    return name.charAt(0).toUpperCase() + name.slice(1);
+  const formatOverdueDate = (dateString: string | null, timeString: string | null) => {
+    if (!dateString) return "";
+    const date = new Date(dateString);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const d = new Date(dateString);
+    d.setHours(0, 0, 0, 0);
+    if (d.getTime() === yesterday.getTime()) return "Yesterday";
+    return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
   };
 
-  const incompleteTasks = tasks.filter(t => !t.is_done);
-  const taskCount = incompleteTasks.length;
+  const getGreeting = () => {
+    const h = new Date().getHours();
+    if (h < 12) return "Good morning";
+    if (h < 18) return "Good afternoon";
+    return "Good evening";
+  };
+
+  const getDisplayName = () => displayName;
+
+  const getDateString = () =>
+    new Date().toLocaleDateString("en-US", {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+    });
+
+  const getDateStringShort = () =>
+    new Date().toLocaleDateString("en-US", {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+    });
+
+  const incompleteToday = todayTasks.filter((t) => !t.is_done);
+  const taskCount = incompleteToday.length;
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const overdueTasks = todayTasks.filter(
+    (t) => !t.is_done && t.due_date && t.due_date < todayStr
+  );
+  const overdueCount = overdueTasks.length;
+
+  const incompleteUpcoming = upcomingTasks.filter((t) => !t.is_done);
+  const buckets = getUpcomingBuckets(incompleteUpcoming);
+
+  const sampleOverdue = overdueTasks[0];
+  const sampleToday = overdueCount === 0 ? incompleteToday[0] : null;
 
   return (
     <ProtectedRoute>
-      <div className="min-h-screen bg-gray-50 dark:bg-gray-950 pb-24 md:pb-8 transition-colors">
-        <main className="container mx-auto px-4 py-8 md:py-12 max-w-3xl">
-          {/* Header */}
-          <div className="mb-8 md:mb-12">
-            <h1 className="text-3xl md:text-4xl font-bold text-gray-900 dark:text-white mb-2">
-              Hi {getUserName()} 👋
+      <div className="min-h-screen bg-background transition-colors">
+        <main className="container mx-auto px-4 lg:px-12 py-8 md:py-12 max-w-md lg:max-w-6xl">
+          {/* Header: greeting + date only */}
+          <header className="mb-8 md:mb-12">
+            <h1 className="text-3xl md:text-4xl font-semibold text-foreground mb-1">
+              {getGreeting()}
+              <span className="hidden lg:inline">
+                {getDisplayName() ? `, ${getDisplayName()}` : ""}
+              </span>
             </h1>
-            <p className="text-gray-600 dark:text-gray-400 text-lg mb-3">
-              Today at a glance
+            <p className="text-muted-foreground text-base mt-2">
+              {getDateString()}
             </p>
-            <input
-              type="search"
-              placeholder="Search all tasks…"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full max-w-sm h-10 px-3 rounded-lg border border-gray-300 dark:border-gray-700 bg-gray-100 dark:bg-gray-800/50 text-gray-900 dark:text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-            <div className="mt-3 inline-flex rounded-full bg-gray-100 dark:bg-gray-800/60 p-1">
-              <button
-                type="button"
-                onClick={() => setView('today')}
-                className={`px-3 py-1 text-sm rounded-full ${
-                  view === 'today'
-                    ? 'bg-white dark:bg-gray-900 text-gray-900 dark:text-white shadow-sm'
-                    : 'text-gray-600 dark:text-gray-300'
-                }`}
-              >
-                Today
-              </button>
-              <button
-                type="button"
-                onClick={() => setView('upcoming')}
-                className={`ml-1 px-3 py-1 text-sm rounded-full ${
-                  view === 'upcoming'
-                    ? 'bg-white dark:bg-gray-900 text-gray-900 dark:text-white shadow-sm'
-                    : 'text-gray-600 dark:text-gray-300'
-                }`}
-              >
-                Upcoming
-              </button>
-            </div>
-          </div>
+          </header>
 
           {loading ? (
             <div className="space-y-6">
-              {/* Loading skeletons handled by loading.tsx */}
+              <Card className="animate-pulse p-5 rounded-2xl">
+                <div className="h-6 bg-muted rounded w-32 mb-4" />
+                <div className="space-y-3">
+                  <div className="h-12 bg-muted rounded-xl" />
+                  <div className="h-12 bg-muted rounded-xl" />
+                </div>
+              </Card>
             </div>
           ) : (
-            <div className="space-y-6">
-              {/* WhatsApp Linking Card - Only show if not linked */}
-              {!isWhatsAppLinked && (
-                <button
-                  onClick={() => router.push('/link-whatsapp')}
-                  className="w-full text-left p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors"
-                >
-                  <p className="text-sm text-blue-700 dark:text-blue-300">
-                    💬 Link WhatsApp – add tasks on the go
-                  </p>
-                </button>
-              )}
-
-              {/* Card 1: Today's Tasks */}
-              <Card className="hover:border-emerald-600/50 dark:hover:border-emerald-800/50 transition-colors">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-3">
-                    <span className="text-2xl">✓</span>
-                    <h2 className="text-xl font-semibold text-gray-900 dark:text-white">Today's Tasks</h2>
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8">
+              {/* Left column: Today + Upcoming */}
+              <div className="lg:col-span-7 space-y-6">
+                {/* Today card */}
+                <Card className="rounded-2xl p-5 shadow-sm border border-border hover:border-primary/30 transition-colors">
+                  <div className="flex items-center justify-between mb-4">
+                    <Link
+                      href="/tasks"
+                      className="text-xl font-semibold text-foreground hover:text-primary transition-colors"
+                    >
+                      Today
+                    </Link>
+                    <Link
+                      href="/tasks"
+                      className="w-8 h-8 flex items-center justify-center rounded-lg text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
+                      aria-label="Add task"
+                      title="Add task"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path d="M12 5v14M5 12h14" />
+                      </svg>
+                    </Link>
                   </div>
-                  {taskCount > 0 && (
-                    <span className="px-3 py-1 bg-emerald-100 dark:bg-emerald-900/30 border border-emerald-300 dark:border-emerald-700/50 rounded-full text-sm text-emerald-700 dark:text-emerald-300">
-                      {taskCount} {taskCount === 1 ? 'task' : 'tasks'}
-                    </span>
-                  )}
-                </div>
 
-                {taskCount === 0 ? (
-                  <div className="text-center py-6">
-                    <p className="text-gray-600 dark:text-gray-400 mb-1">Light day - enjoy it ✨</p>
-                    <p className="text-sm text-gray-500">No tasks due today</p>
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {incompleteTasks.slice(0, 3).map((task) => (
-                      <div
-                        key={task.id}
-                        className="flex items-start gap-3 p-3 bg-gray-100 dark:bg-gray-800/50 rounded-xl hover:bg-gray-200 dark:hover:bg-gray-800 transition-colors"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={!!task.is_done}
-                          onChange={() => toggleTask(task.id, !!task.is_done)}
-                          className="mt-0.5 h-5 w-5 rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-emerald-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-offset-gray-900 cursor-pointer flex-shrink-0 transition-colors"
-                          aria-label={`Mark "${task.title}" as complete`}
-                        />
-                        <div className="flex-1 min-w-0">
-                          <p className="text-gray-900 dark:text-white font-medium truncate">{task.title}</p>
-                          {(task.due_time || task.category) && (
-                            <div className="flex items-center gap-2 mt-1 text-xs text-gray-600 dark:text-gray-400">
-                              {task.due_time && <span>🕐 {formatTime(task.due_time)}</span>}
-                              {task.category && (
-                                <span className="px-2 py-0.5 bg-gray-200 dark:bg-gray-700 rounded">
-                                  {task.category}
-                                </span>
-                              )}
+                  {(overdueCount > 0 || taskCount > 0) ? (
+                    <>
+                      <h4 className="text-sm font-medium text-muted-foreground uppercase tracking-wider mb-4">
+                        NEXT UP
+                      </h4>
+                      <div className="space-y-3">
+                        {/* Mobile: one sample row */}
+                        <div className="lg:hidden space-y-3">
+                          {sampleOverdue ? (
+                            <div className="flex items-start gap-3">
+                              <div className="mt-1 w-1.5 h-1.5 rounded-full bg-destructive flex-shrink-0" />
+                              <div className="flex-1">
+                                <p className="text-foreground font-medium">
+                                  {sampleOverdue.title}
+                                </p>
+                                <p className="text-sm text-muted-foreground">
+                                  {formatOverdueDate(sampleOverdue.due_date, sampleOverdue.due_time)}
+                                  {sampleOverdue.due_time && ` ${formatTime(sampleOverdue.due_time)}`}
+                                </p>
+                              </div>
                             </div>
-                          )}
+                          ) : sampleToday ? (
+                            <div className="flex items-start gap-3">
+                              <div className="mt-1 w-1.5 h-1.5 rounded-full bg-primary flex-shrink-0" />
+                              <div className="flex-1">
+                                <p className="text-foreground font-medium">
+                                  {sampleToday.title}
+                                </p>
+                                <p className="text-sm text-muted-foreground">
+                                  {sampleToday.due_time
+                                    ? formatTime(sampleToday.due_time)
+                                    : "Today"}
+                                </p>
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                        {/* Desktop: task rows */}
+                        <div className="hidden lg:block space-y-2">
+                          {[...overdueTasks, ...incompleteToday.filter(t => !overdueTasks.some(o => o.id === t.id))]
+                            .slice(0, 3)
+                            .map((task) => (
+                              <div
+                                key={task.id}
+                                className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-muted/50 transition-colors"
+                              >
+                                <div className="flex-1 min-w-0">
+                                  <p className="font-medium text-sm text-foreground truncate">
+                                    {task.title}
+                                  </p>
+                                  <p className="text-xs text-muted-foreground mt-0.5">
+                                    {task.due_date && task.due_date < todayStr
+                                      ? `${formatOverdueDate(task.due_date, task.due_time)}${task.due_time ? ` · ${formatTime(task.due_time)}` : ""}`
+                                      : task.due_time
+                                        ? formatTime(task.due_time)
+                                        : "Today"}
+                                  </p>
+                                </div>
+                                {task.category && (
+                                  <div className="px-2.5 py-1 rounded-md bg-primary/10 text-primary text-xs font-medium shrink-0">
+                                    {task.category}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
                         </div>
                       </div>
-                    ))}
-                    {taskCount > 3 && (
-                      <button
-                        onClick={() => router.push('/tasks')}
-                        className="text-sm text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 w-full text-center py-2"
-                      >
-                        +{taskCount - 3} more {taskCount - 3 === 1 ? 'task' : 'tasks'} →
-                      </button>
-                    )}
-                  </div>
-                )}
-              </Card>
+                    </>
+                  ) : null}
 
-              {/* ============================================================================ */}
-              {/* DISABLED FOR TASK-ONLY MVP: Meals Today Card */}
-              {/* To re-enable: Uncomment this entire Card section */}
-              {/* ============================================================================ */}
-              {/*
-              <Card className="hover:border-purple-600/50 dark:hover:border-emerald-800/50 transition-colors">
-                <div className="flex items-center gap-3 mb-4">
-                  <span className="text-2xl">🍽️</span>
-                  <h2 className="text-xl font-semibold text-gray-900 dark:text-white">Meals Today</h2>
-                </div>
+                </Card>
 
-                {meals.every(m => !m.recipe_title) ? (
-                  <div className="text-center py-6">
-                    <p className="text-gray-600 dark:text-gray-400 mb-1">No meals planned yet</p>
-                    <button
-                      onClick={() => router.push('/mealplan')}
-                      className="text-sm text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 mt-2"
-                    >
-                      Plan your week →
-                    </button>
-                  </div>
-                ) : (
-                  <div className="flex gap-2 flex-wrap">
-                    {meals.map((meal) => {
-                      if (!meal.recipe_title) return null;
-                      
-                      const icon = meal.slot === 'breakfast' ? '🥐' : 
-                                   meal.slot === 'lunch' ? '🥗' : '🍝';
-                      const label = meal.slot.charAt(0).toUpperCase();
-                      
-                      return (
-                        <div
-                          key={meal.slot}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-purple-100 dark:bg-purple-900/30 border border-purple-300 dark:border-purple-700/50 rounded-full text-sm"
-                        >
-                          <span>{icon}</span>
-                          <span className="text-purple-900 dark:text-white font-medium">{label}</span>
-                          <span className="text-purple-700 dark:text-gray-300">·</span>
-                          <span className="text-purple-700 dark:text-gray-300 truncate max-w-[120px]">
-                            {meal.recipe_title}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </Card>
-              */}
-
-              {/* ============================================================================ */}
-              {/* GROCERY READINESS CARD - Disabled while grocery feature is in development */}
-              {/* To re-enable: Uncomment the entire Card below */}
-              {/* ============================================================================ */}
-              {/* <Card className="hover:border-green-600/50 dark:hover:border-emerald-800/50 transition-colors">
-                <div className="flex items-center gap-3 mb-4">
-                  <span className="text-2xl">🛒</span>
-                  <h2 className="text-xl font-semibold text-gray-900 dark:text-white">Grocery Readiness</h2>
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <div>
-                    {groceryMissing === 0 ? (
-                      <>
-                        <p className="text-gray-900 dark:text-white font-medium mb-1">All set! ✨</p>
-                        <p className="text-sm text-gray-600 dark:text-gray-400">Your grocery list is complete</p>
-                      </>
-                    ) : (
-                      <>
-                        <p className="text-gray-900 dark:text-white font-medium mb-1">
-                          {groceryMissing} {groceryMissing === 1 ? 'item' : 'items'} needed
-                        </p>
-                        <button
-                          onClick={() => router.push('/meals/groceries')}
-                          className="text-sm text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300"
-                        >
-                          View list →
-                        </button>
-                      </>
-                    )}
-                  </div>
-                  <div className="text-right">
-                    <div className={`text-3xl font-bold ${groceryMissing === 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-yellow-400'}`}>
-                      {groceryMissing === 0 ? '✓' : groceryMissing}
+                {/* Upcoming card */}
+                <Card className="rounded-2xl p-5 shadow-sm border border-border">
+                  <h3 className="text-xl font-semibold text-foreground mb-4">
+                    Upcoming
+                  </h3>
+                  {/* Mobile: two rows - Tomorrow, This week */}
+                  <div className="space-y-4 lg:hidden">
+                    <div>
+                      <p className="text-sm text-foreground">Tomorrow</p>
+                      <p className="text-sm font-semibold text-foreground mt-0.5">
+                        {buckets.tomorrowCount} {buckets.tomorrowCount === 1 ? "task" : "tasks"}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-foreground">This week</p>
+                      <p className="text-sm font-semibold text-foreground mt-0.5">
+                        {buckets.thisWeekCount} {buckets.thisWeekCount === 1 ? "task" : "tasks"}
+                      </p>
                     </div>
                   </div>
-                </div>
-              </Card> */}
-              {/* ============================================================================ */}
+                  {/* Desktop: three cards */}
+                  <div className="hidden lg:grid grid-cols-3 gap-4">
+                    <div className="p-4 rounded-xl border border-border/50">
+                      <p className="text-sm font-medium mb-2">Tomorrow</p>
+                      <p className="text-muted-foreground text-sm">
+                        {buckets.tomorrowCount} {buckets.tomorrowCount === 1 ? "task" : "tasks"}
+                      </p>
+                    </div>
+                    <div className="p-4 rounded-xl border border-border/50">
+                      <p className="text-sm font-medium mb-2">Weekend</p>
+                      <p className="text-muted-foreground text-sm">
+                        {buckets.weekendCount} {buckets.weekendCount === 1 ? "task" : "tasks"}
+                      </p>
+                    </div>
+                    <div className="p-4 rounded-xl border border-border/50">
+                      <p className="text-sm font-medium mb-2">Next Week</p>
+                      <p className="text-muted-foreground text-sm">
+                        {buckets.nextWeekCount} {buckets.nextWeekCount === 1 ? "task" : "tasks"}
+                      </p>
+                    </div>
+                  </div>
+                  {incompleteUpcoming.length === 0 && (
+                    <p className="text-sm text-muted-foreground mt-4">
+                      No upcoming tasks
+                    </p>
+                  )}
+                </Card>
+              </div>
 
-              {/* Primary CTA */}
-              <div className="pt-4">
-                <Button
-                  className="w-full h-14 text-lg bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 focus-visible:ring-emerald-500"
-                  onClick={() => {
-                    // Trigger the FloatingBrainDump component
-                    const brainDumpButton = document.querySelector('[aria-label="Open Brain Dump"]') as HTMLButtonElement;
-                    if (brainDumpButton) {
-                      brainDumpButton.click();
-                    }
-                  }}
-                  aria-label="Open Brain Dump to add tasks"
+              {/* Right column: Recent Lists, Quick capture, WhatsApp */}
+              <div className="lg:col-span-5 space-y-6">
+                {/* Lists / Recent Lists */}
+                <Card className="rounded-2xl p-5 shadow-sm border border-border">
+                  <div className="flex items-center justify-between mb-6">
+                    <Link
+                      href="/lists"
+                      className="flex items-center justify-between w-full gap-2 hover:opacity-80 transition-opacity lg:hidden"
+                    >
+                      <span className="text-xl font-semibold text-foreground">Lists</span>
+                      <ChevronRight className="w-4 h-4 shrink-0 text-foreground" />
+                    </Link>
+                    <Link
+                      href="/lists"
+                      className="text-xl font-semibold text-foreground hover:text-primary transition-colors hidden lg:block"
+                    >
+                      Recent Lists
+                    </Link>
+                    <div className="hidden lg:flex items-center gap-2">
+                      <Link
+                        href="/lists"
+                        className="w-8 h-8 flex items-center justify-center rounded-lg text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
+                        aria-label="Add list"
+                        title="Add list"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path d="M12 5v14M5 12h14" />
+                        </svg>
+                      </Link>
+                    </div>
+                  </div>
+                  {lists.length === 0 ? (
+                    <p className="text-sm text-muted-foreground py-2">
+                      No lists yet
+                    </p>
+                  ) : (
+                    <div className="space-y-3">
+                      {lists.map((list) => {
+                        const done = list.doneCount ?? 0;
+                        const total = list.itemCount ?? 0;
+                        return (
+                          <Link
+                            key={list.id}
+                            href={`/lists/${list.id}`}
+                            className="flex items-center justify-between p-3 rounded-xl hover:bg-muted/50 transition-colors"
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className="w-8 h-8 rounded-lg bg-muted flex items-center justify-center text-base leading-none">
+                                {emojiForListName(list.name)}
+                              </div>
+                              <span className="font-medium text-sm text-foreground">
+                                {list.name}
+                              </span>
+                            </div>
+                            <span className="text-xs text-muted-foreground">
+                              <span className="lg:hidden">{total > 0 ? `${done}/${total}` : "0"}</span>
+                              <span className="hidden lg:inline bg-muted text-muted-foreground rounded px-1.5 py-0.5">{total}</span>
+                            </span>
+                          </Link>
+                        );
+                      })}
+                    </div>
+                  )}
+                </Card>
+
+                {/* WhatsApp card */}
+                <Card
+                  className={`relative overflow-hidden rounded-2xl p-5 shadow-sm border ${
+                    isWhatsAppLinked
+                      ? "bg-[#25D366]/5 border-[#25D366]/20"
+                      : "border-border"
+                  }`}
                 >
-                  💭 Unload (Brain Dump)
-                </Button>
+                  {isWhatsAppLinked && (
+                    <div className="absolute top-0 right-0 w-24 h-24 rounded-full bg-[#25D366]/20 blur-2xl pointer-events-none" />
+                  )}
+                  <div className="flex items-start gap-3">
+                    <div
+                      className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${
+                        isWhatsAppLinked ? "bg-[#25D366] text-white" : "bg-muted"
+                      }`}
+                    >
+                      <MessageSquare
+                        className={`w-5 h-5 ${isWhatsAppLinked ? "text-white" : "text-muted-foreground"}`}
+                      />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h3 className="font-medium text-foreground mb-1">
+                        WhatsApp
+                      </h3>
+                      {isWhatsAppLinked ? (
+                        <>
+                          <p className="text-sm text-muted-foreground mb-3">
+                            Forward messages to add tasks instantly.
+                          </p>
+                          <div className="flex items-center gap-2 text-xs font-medium text-foreground">
+                            <span className="w-2 h-2 rounded-full bg-[#25D366] animate-pulse" />
+                            Daily digest enabled
+                          </div>
+                        </>
+                      ) : (
+                        <p className="text-sm text-muted-foreground mb-4">
+                          Not linked
+                        </p>
+                      )}
+                      <Link
+                        href="/link-whatsapp"
+                        className={`mt-3 inline-flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl font-medium text-sm ${
+                          isWhatsAppLinked
+                            ? "border border-primary text-primary hover:bg-primary/5"
+                            : "bg-primary text-primary-foreground hover:bg-primary/90"
+                        }`}
+                      >
+                        {isWhatsAppLinked ? "Manage WhatsApp" : "Connect WhatsApp"}
+                      </Link>
+                    </div>
+                  </div>
+                </Card>
               </div>
             </div>
           )}
@@ -403,4 +512,3 @@ export default function HomePage() {
     </ProtectedRoute>
   );
 }
-

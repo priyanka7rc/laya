@@ -5,6 +5,10 @@ export interface ListViewList {
   source: string;
   createdAt: string;
   updatedAt: string;
+  /** Item count (non-deleted). Optional for backward compat. */
+  itemCount?: number;
+  /** Completed item count. Optional for backward compat. */
+  doneCount?: number;
 }
 
 export interface ListViewPageInfo {

@@ -12,36 +12,19 @@ interface ThemeContextType {
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setTheme] = useState<Theme>('dark');
+  const [theme, setTheme] = useState<Theme>('light');
   const [mounted, setMounted] = useState(false);
 
-  // Initial theme load
   useEffect(() => {
     setMounted(true);
-    const savedTheme = localStorage.getItem('laya-theme') as Theme;
-    if (savedTheme) {
-      setTheme(savedTheme);
-    } else {
-      setTheme('dark');
-    }
   }, []);
 
-  // Apply theme class whenever theme changes
   useEffect(() => {
-    const root = document.documentElement;
-    if (theme === 'dark') {
-      root.classList.add('dark');
-    } else {
-      root.classList.remove('dark');
-    }
-    console.log('Theme effect ran. Theme:', theme, 'Class:', root.className);
-  }, [theme]);
+    document.documentElement.classList.remove('dark');
+  }, []);
 
   const toggleTheme = () => {
-    const newTheme = theme === 'dark' ? 'light' : 'dark';
-    console.log('Toggle: Setting theme to', newTheme);
-    setTheme(newTheme);
-    localStorage.setItem('laya-theme', newTheme);
+    // Light mode only; no-op
   };
 
   // Always provide context value

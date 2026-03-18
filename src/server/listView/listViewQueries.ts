@@ -83,7 +83,34 @@ export async function queryAllLists(
   }
 
   const rows = data as DbListRow[];
-  const lists = rows.map(mapRowToList);
+  const listIds = rows.map((r) => r.id);
+
+  // Attach item counts per list
+  const countMap = new Map<string, { total: number; done: number }>();
+  if (listIds.length > 0) {
+    const { data: items } = await supabase
+      .from('list_items')
+      .select('list_id, is_done')
+      .in('list_id', listIds)
+      .is('deleted_at', null);
+    for (const row of items ?? []) {
+      const r = row as { list_id: string; is_done: boolean };
+      const cur = countMap.get(r.list_id) ?? { total: 0, done: 0 };
+      cur.total += 1;
+      if (r.is_done) cur.done += 1;
+      countMap.set(r.list_id, cur);
+    }
+  }
+
+  const lists: ListViewList[] = rows.map((row) => {
+    const list = mapRowToList(row);
+    const counts = countMap.get(row.id);
+    if (counts) {
+      list.itemCount = counts.total;
+      list.doneCount = counts.done;
+    }
+    return list;
+  });
   const pageInfo = buildPageInfo(rows, limit);
   return { lists, pageInfo };
 }

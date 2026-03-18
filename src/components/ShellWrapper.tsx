@@ -2,8 +2,6 @@
 
 import { useAuth } from "./AuthProvider";
 import { usePathname } from "next/navigation";
-import BottomNavigation from "./BottomNavigation";
-import DesktopTopNav from "./DesktopTopNav";
 
 const MAIN_APP_PATHS = [
   "/",
@@ -22,22 +20,24 @@ function isMainAppRoute(pathname: string | null): boolean {
   return false;
 }
 
-export default function ConditionalNav() {
+export default function ShellWrapper({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   const { user, loading } = useAuth();
   const pathname = usePathname();
 
-  if (loading || !user) {
-    return null;
-  }
+  const showShellPadding =
+    !loading && user && isMainAppRoute(pathname);
 
-  if (!isMainAppRoute(pathname)) {
-    return null;
+  if (!showShellPadding) {
+    return <>{children}</>;
   }
 
   return (
-    <>
-      <BottomNavigation />
-      <DesktopTopNav />
-    </>
+    <div className="min-h-screen pb-24 lg:pb-8 lg:pt-[72px]">
+      {children}
+    </div>
   );
 }

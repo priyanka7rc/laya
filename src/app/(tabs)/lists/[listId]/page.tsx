@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { Card, Button } from '@/components/ui';
 import { useToast } from '@/hooks/useToast';
@@ -51,7 +51,7 @@ function ItemInput({
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        toast.error((data as { error?: string }).error || 'Failed to add item');
+        toast.error((data as { error?: string }).error || "Couldn't save changes");
         return;
       }
       setValue('');
@@ -59,7 +59,7 @@ function ItemInput({
       inputRef.current?.focus();
     } catch (err) {
       console.error(err);
-      toast.error('Failed to add item');
+      toast.error('Couldn\'t save changes');
     } finally {
       setSubmitting(false);
     }
@@ -77,9 +77,9 @@ function ItemInput({
           submit();
         }
       }}
-      placeholder="Add an item…"
+      placeholder="Add an item"
       disabled={disabled}
-      className="w-full h-11 px-4 bg-gray-100 dark:bg-gray-800/50 border border-gray-300 dark:border-gray-700 rounded-xl text-gray-900 dark:text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all text-base"
+      className="w-full h-11 px-4 rounded-xl border border-border bg-background text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 text-base"
       aria-label="New list item"
     />
   );
@@ -123,7 +123,7 @@ function ItemRow({
         body: JSON.stringify({ text: trimmed }),
       });
       if (!res.ok) {
-        toast.error('Failed to update item');
+        toast.error('Couldn\'t save changes');
         return;
       }
       onUpdateText(item, trimmed);
@@ -131,7 +131,7 @@ function ItemRow({
       setEditing(false);
     } catch (err) {
       console.error(err);
-      toast.error('Failed to update item');
+      toast.error("Couldn't save changes");
     }
   }, [item, editValue, onUpdateText, toast]);
 
@@ -140,11 +140,11 @@ function ItemRow({
       <button
         type="button"
         onClick={() => onToggle(item)}
-        className="flex-shrink-0 h-8 w-8 rounded-lg border-2 border-gray-300 dark:border-gray-600 bg-gray-100 dark:bg-gray-800 hover:border-blue-500 flex items-center justify-center cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500"
+        className="flex-shrink-0 h-8 w-8 rounded-lg border-2 border-border bg-card hover:border-primary flex items-center justify-center cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary/30"
         aria-label={item.is_done ? `Mark "${item.text}" as incomplete` : `Mark "${item.text}" as complete`}
       >
         {item.is_done && (
-          <svg className="w-4 h-4 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <svg className="w-4 h-4 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
           </svg>
         )}
@@ -164,16 +164,16 @@ function ItemRow({
               }
             }}
             autoFocus
-            className="w-full px-2 py-1 bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="w-full px-2 py-1 rounded border border-border bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
           />
         ) : (
           <button
             type="button"
             onClick={() => setEditing(true)}
-            className={`text-left w-full px-2 py-1 -mx-2 rounded hover:bg-gray-100 dark:hover:bg-gray-800/50 ${
+            className={`text-left w-full px-2 py-1 -mx-2 rounded hover:bg-muted/50 ${
               item.is_done
-                ? 'text-gray-500 dark:text-gray-400 line-through'
-                : 'text-gray-900 dark:text-white font-medium'
+                ? 'text-muted-foreground line-through'
+                : 'text-foreground font-medium'
             }`}
           >
             {item.text}
@@ -183,7 +183,7 @@ function ItemRow({
       <button
         type="button"
         onClick={() => onDelete(item)}
-        className="flex-shrink-0 h-8 w-8 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 flex items-center justify-center"
+        className="flex-shrink-0 h-8 w-8 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 flex items-center justify-center"
         aria-label={`Delete "${item.text}"`}
         title="Delete item"
       >
@@ -226,12 +226,12 @@ function ItemList({
         });
         if (!res.ok) {
           onRefresh();
-          toast.error('Failed to update item');
+          toast.error('Couldn\'t save changes');
         }
       } catch (err) {
         console.error(err);
         onRefresh();
-        toast.error('Failed to update item');
+        toast.error('Couldn\'t save changes');
       }
     },
     [onToggle, onRefresh, toast]
@@ -248,12 +248,12 @@ function ItemList({
         });
         if (!res.ok) {
           onRefresh();
-          toast.error('Failed to delete item');
+          toast.error('Couldn\'t save changes');
         }
       } catch (err) {
         console.error(err);
         onRefresh();
-        toast.error('Failed to delete item');
+          toast.error("Couldn't save changes");
       }
     },
     [onDelete, onRefresh, toast]
@@ -262,7 +262,7 @@ function ItemList({
   if (items.length === 0) {
     return (
       <Card className="text-center py-12">
-        <p className="text-gray-600 dark:text-gray-400">No items yet</p>
+        <p className="text-muted-foreground">This list is empty.</p>
       </Card>
     );
   }
@@ -285,6 +285,7 @@ function ItemList({
 
 export default function ListDetailPage() {
   const params = useParams();
+  const router = useRouter();
   const listId = typeof params?.listId === 'string' ? params.listId : null;
   const [listName, setListName] = useState<string>('');
   const [items, setItems] = useState<ListItem[]>([]);
@@ -292,6 +293,10 @@ export default function ListDetailPage() {
   const [totalCount, setTotalCount] = useState<number>(0);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  const [editingName, setEditingName] = useState(false);
+  const [editNameValue, setEditNameValue] = useState('');
+  const [renaming, setRenaming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const { toast } = useToast();
 
   const fetchItems = useCallback(async (id: string) => {
@@ -303,7 +308,7 @@ export default function ListDetailPage() {
       const data = (await res.json().catch(() => ({}))) as ListDetailResponse & { error?: string };
       if (!res.ok) {
         if (res.status === 404) setNotFound(true);
-        else toast.error(data.error || 'Failed to load list');
+        else toast.error(data.error || "Couldn't load list");
         setItems([]);
         return;
       }
@@ -314,7 +319,7 @@ export default function ListDetailPage() {
       setTotalCount(result.totalCount);
     } catch (err) {
       console.error(err);
-      toast.error('Failed to load list');
+      toast.error("Couldn't load list");
       setItems([]);
     } finally {
       setLoading(false);
@@ -353,13 +358,67 @@ export default function ListDetailPage() {
     );
   }, []);
 
+  const handleRenameList = useCallback(async () => {
+    if (!listId || !editNameValue.trim() || editNameValue.trim() === listName) {
+      setEditingName(false);
+      setEditNameValue(listName);
+      return;
+    }
+    const trimmed = editNameValue.trim();
+    setRenaming(true);
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/lists/${listId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ name: trimmed }),
+      });
+      if (!res.ok) {
+        toast.error('Couldn\'t save changes');
+        return;
+      }
+      setListName(trimmed);
+      setEditingName(false);
+      toast.success('List updated');
+    } catch {
+      toast.error('Couldn\'t save changes');
+    } finally {
+      setRenaming(false);
+    }
+  }, [listId, listName, editNameValue, toast]);
+
+  const handleDeleteList = useCallback(async () => {
+    if (!listId || !window.confirm('Delete this list?')) return;
+    setDeleting(true);
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/lists/${listId}`, {
+        method: 'DELETE',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) {
+        toast.error('Couldn\'t save changes');
+        return;
+      }
+      toast.success('List deleted');
+      router.push('/lists');
+    } catch {
+      toast.error('Couldn\'t save changes');
+    } finally {
+      setDeleting(false);
+    }
+  }, [listId, router, toast]);
+
   if (notFound) {
     return (
       <ProtectedRoute>
-        <div className="min-h-screen bg-gray-50 dark:bg-gray-950 pb-24 md:pb-8">
+        <div className="min-h-screen bg-background pb-24 md:pb-8">
           <main className="container mx-auto px-4 py-8 max-w-3xl">
-            <p className="text-gray-600 dark:text-gray-400">List not found.</p>
-            <Link href="/lists" className="text-blue-600 dark:text-blue-400 mt-2 inline-block">
+            <p className="text-muted-foreground">List not found.</p>
+            <Link href="/lists" className="text-primary hover:underline mt-2 inline-block">
               Back to lists
             </Link>
           </main>
@@ -370,37 +429,76 @@ export default function ListDetailPage() {
 
   return (
     <ProtectedRoute>
-      <div className="min-h-screen bg-gray-50 dark:bg-gray-950 pb-24 md:pb-8 transition-colors">
+      <div className="min-h-screen bg-background transition-colors pb-24 md:pb-8">
         <main className="container mx-auto px-4 py-8 md:py-12 max-w-3xl">
-          <div className="mb-6">
-            <Link
-              href="/lists"
-              className="inline-flex items-center gap-1 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white mb-2"
-            >
-              ← Back to lists
-            </Link>
-            {!loading && (
-              <h1 className="text-3xl md:text-4xl font-bold text-gray-900 dark:text-white">
-                {listName || 'List'}
-              </h1>
+          <div className="mb-6 flex items-start justify-between gap-4">
+            <div className="flex-1 min-w-0">
+              <Link
+                href="/lists"
+                className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground mb-2"
+              >
+                ← Back to lists
+              </Link>
+              {!loading && (
+                editingName ? (
+                  <div className="flex flex-wrap items-center gap-2 mt-1">
+                    <input
+                      type="text"
+                      value={editNameValue}
+                      onChange={(e) => setEditNameValue(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') handleRenameList();
+                        if (e.key === 'Escape') {
+                          setEditingName(false);
+                          setEditNameValue(listName);
+                        }
+                      }}
+                      onBlur={() => handleRenameList()}
+                      className="text-3xl md:text-4xl font-semibold text-foreground w-full max-w-md px-2 py-1 rounded-lg border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/30"
+                      autoFocus
+                    />
+                  </div>
+                ) : (
+                  <h1
+                    className="text-3xl md:text-4xl font-semibold text-foreground cursor-pointer hover:bg-muted/50 rounded-lg px-2 py-1 -mx-2"
+                    onClick={() => {
+                      setEditNameValue(listName || '');
+                      setEditingName(true);
+                    }}
+                  >
+                    {listName || 'List'}
+                  </h1>
+                )
+              )}
+            </div>
+            {!loading && listId && (
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => handleDeleteList()}
+                disabled={deleting}
+                className="text-destructive hover:bg-destructive/10 shrink-0"
+              >
+                Delete list
+              </Button>
             )}
           </div>
 
           {loading ? (
             <div className="space-y-3">
-              <div className="h-11 bg-gray-200 dark:bg-gray-800 rounded-xl animate-pulse" />
-              <Card className="animate-pulse">
-                <div className="h-5 bg-gray-200 dark:bg-gray-800 rounded w-3/4 mb-2" />
-                <div className="h-4 bg-gray-100 dark:bg-gray-700 rounded w-1/2" />
+              <div className="h-11 bg-muted rounded-xl animate-pulse" />
+              <Card className="animate-pulse p-4">
+                <div className="h-5 bg-muted rounded w-3/4 mb-2" />
+                <div className="h-4 bg-muted rounded w-1/2" />
               </Card>
             </div>
           ) : listId ? (
             <>
-              <Card className="mb-6 border-blue-300/30 dark:border-blue-800/30">
+              <Card className="mb-6">
                 <ItemInput listId={listId} onAdded={handleItemAdded} />
               </Card>
               {!loading && (
-                <div className="mb-3 text-sm text-gray-600 dark:text-gray-400">
+                <div className="mb-3 text-sm text-muted-foreground">
                   {doneCount} / {totalCount} completed
                 </div>
               )}
