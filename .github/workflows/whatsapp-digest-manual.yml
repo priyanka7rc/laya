@@ -1,0 +1,45 @@
+# Manual-only: trigger digest job (Mode A). No schedule — use when you need a one-off run.
+
+name: whatsapp-digest-manual
+
+on:
+  workflow_dispatch:
+
+jobs:
+  trigger-digest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST /api/jobs/whatsapp-digest
+        env:
+          BASE_URL: ${{ secrets.PROD_BASE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BASE_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::PROD_BASE_URL and CRON_SECRET must be set as repository secrets."
+            exit 1
+          fi
+          URL="${BASE_URL%/}/api/jobs/whatsapp-digest"
+          attempt=1
+          while [ "$attempt" -le 3 ]; do
+            echo "Attempt $attempt of 3 → $URL"
+            http_code=$(curl -sS -o /tmp/wd_body -w "%{http_code}" -X POST "$URL" \
+              -H "x-cron-secret: ${CRON_SECRET}" \
+              -H "Content-Type: application/json" \
+              -d '{}')
+            body=$(cat /tmp/wd_body)
+            if [ "$http_code" -ge 200 ] && [ "$http_code" -lt 300 ]; then
+              echo "Success: HTTP $http_code"
+              echo "$body"
+              exit 0
+            fi
+            echo "::error::Digest job failed: HTTP $http_code"
+            echo "Response body:"
+            echo "$body"
+            if [ "$attempt" -lt 3 ]; then
+              echo "Sleeping 5s before retry..."
+              sleep 5
+            fi
+            attempt=$((attempt + 1))
+          done
+          exit 1
