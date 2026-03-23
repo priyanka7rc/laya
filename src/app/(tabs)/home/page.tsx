@@ -281,7 +281,7 @@ export default function HomePage() {
                                   {sampleOverdue.title}
                                 </p>
                                 <p className="text-sm text-muted-foreground">
-                                  {formatOverdueDate(sampleOverdue.due_date, sampleOverdue.due_time)}
+                                  {formatOverdueDate(sampleOverdue.due_date ?? null, sampleOverdue.due_time ?? null)}
                                   {sampleOverdue.due_time && ` ${formatTime(sampleOverdue.due_time)}`}
                                 </p>
                               </div>
@@ -317,7 +317,7 @@ export default function HomePage() {
                                   </p>
                                   <p className="text-xs text-muted-foreground mt-0.5">
                                     {task.due_date && task.due_date < todayStr
-                                      ? `${formatOverdueDate(task.due_date, task.due_time)}${task.due_time ? ` · ${formatTime(task.due_time)}` : ""}`
+                                      ? `${formatOverdueDate(task.due_date ?? null, task.due_time ?? null)}${task.due_time ? ` · ${formatTime(task.due_time)}` : ""}`
                                       : task.due_time
                                         ? formatTime(task.due_time)
                                         : "Today"}

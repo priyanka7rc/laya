@@ -187,9 +187,12 @@ export default function CapturePage() {
       const { data: { session } } = await supabase.auth.getSession();
       console.log("[unload/save] session token present:", !!session?.access_token);
 
-      const authHeader = session?.access_token
-        ? { Authorization: `Bearer ${session.access_token}` }
-        : {};
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (session?.access_token) {
+        headers.Authorization = `Bearer ${session.access_token}`;
+      }
 
       let taskCount = 0;
       let listItemCount = 0;
@@ -210,7 +213,7 @@ export default function CapturePage() {
 
         const insertRes = await fetch("/api/tasks/import/confirm", {
           method: "POST",
-          headers: { "Content-Type": "application/json", ...authHeader },
+          headers,
           body: JSON.stringify({
             tasks: proposedTasks,
             source: TASK_SOURCES.WEB_BRAIN_DUMP,
@@ -240,7 +243,7 @@ export default function CapturePage() {
         console.log("[unload/save] saving list item:", li.item, "→", li.listName);
         const res = await fetch("/api/lists/find-or-create-and-add", {
           method: "POST",
-          headers: { "Content-Type": "application/json", ...authHeader },
+          headers,
           body: JSON.stringify({ listName: li.listName, item: li.item }),
         });
         console.log("[unload/save] list item save status:", res.status);
