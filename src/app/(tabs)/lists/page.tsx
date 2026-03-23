@@ -46,6 +46,7 @@ export default function ListsPage() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [newListModalOpen, setNewListModalOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [togglingStarId, setTogglingStarId] = useState<string | null>(null);
 
   const PAGE_LIMIT = 50;
 
@@ -229,41 +230,126 @@ export default function ListsPage() {
     }
   };
 
+  const handleToggleStar = async (list: ListViewList) => {
+    setMenuOpenId(null);
+    const newStarred = !list.isStarred;
+    // Optimistic update
+    setLists((prev) =>
+      prev.map((l) => (l.id === list.id ? { ...l, isStarred: newStarred } : l))
+    );
+    setTogglingStarId(list.id);
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/lists/${list.id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ is_starred: newStarred }),
+      });
+      if (!res.ok) {
+        // Revert on failure
+        setLists((prev) =>
+          prev.map((l) => (l.id === list.id ? { ...l, isStarred: list.isStarred } : l))
+        );
+        toast.error("Couldn't update list");
+      }
+    } catch {
+      setLists((prev) =>
+        prev.map((l) => (l.id === list.id ? { ...l, isStarred: list.isStarred } : l))
+      );
+      toast.error("Couldn't update list");
+    } finally {
+      setTogglingStarId(null);
+    }
+  };
+
+  const starredLists = filteredLists.filter((l) => l.isStarred);
+  const otherLists = filteredLists.filter((l) => !l.isStarred);
+
+  const ListCard = ({ list }: { list: ListViewList }) => (
+    <Card
+      key={list.id}
+      className="rounded-2xl shadow-sm border border-border p-5 hover:border-primary/30 transition-colors h-44 flex flex-col"
+    >
+      <div className="flex items-start justify-between gap-2 flex-1 min-h-0">
+        <Link href={`/lists/${list.id}`} className="flex-1 min-w-0 flex flex-col h-full">
+          {/* Emoji — rounded square, warm tint */}
+          <div className="w-14 h-14 rounded-xl bg-primary/10 flex items-center justify-center text-3xl leading-none mb-3">
+            {emojiForListName(list.name)}
+          </div>
+          <p className="font-bold text-base text-foreground mb-1">{list.name}</p>
+          <p className="text-xs text-muted-foreground mb-1">{formatUpdated(list.updatedAt)}</p>
+          {(list.itemCount ?? 0) > 0 && (
+            <p className="text-xs text-muted-foreground">
+              {list.itemCount} {list.itemCount === 1 ? 'item' : 'items'}
+            </p>
+          )}
+        </Link>
+        <div className="relative flex-shrink-0" data-list-menu>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              setMenuOpenId(menuOpenId === list.id ? null : list.id);
+            }}
+            className="h-8 w-8 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground"
+            aria-label="List actions"
+            disabled={!!deletingId}
+          >
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+              <circle cx="12" cy="6" r="1.5" />
+              <circle cx="12" cy="12" r="1.5" />
+              <circle cx="12" cy="18" r="1.5" />
+            </svg>
+          </button>
+          {menuOpenId === list.id && (
+            <div className="absolute right-0 top-full mt-1 py-1 rounded-lg border border-border bg-card shadow-md z-10 min-w-[140px]">
+              <button
+                type="button"
+                onClick={() => handleToggleStar(list)}
+                disabled={togglingStarId === list.id}
+                className="w-full px-3 py-2 text-left text-sm text-foreground hover:bg-muted flex items-center gap-2"
+              >
+                <svg className={`w-4 h-4 shrink-0 ${list.isStarred ? "text-yellow-500 fill-yellow-500" : "text-muted-foreground"}`} viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M11.48 3.499a.562.562 0 011.04 0l2.125 5.111a.563.563 0 00.475.345l5.518.442c.499.04.701.663.321.988l-4.204 3.602a.563.563 0 00-.182.557l1.285 5.385a.562.562 0 01-.84.61l-4.725-2.885a.563.563 0 00-.586 0L6.982 20.54a.562.562 0 01-.84-.61l1.285-5.386a.562.562 0 00-.182-.557l-4.204-3.602a.563.563 0 01.321-.988l5.518-.442a.563.563 0 00.475-.345L11.48 3.5z" />
+                </svg>
+                {list.isStarred ? 'Unstar' : 'Star'}
+              </button>
+              <button
+                type="button"
+                onClick={() => handleRename(list)}
+                className="w-full px-3 py-2 text-left text-sm text-foreground hover:bg-muted"
+              >
+                Rename list
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDeleteClick(list)}
+                className="w-full px-3 py-2 text-left text-sm text-destructive hover:bg-muted"
+              >
+                Delete list
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </Card>
+  );
+
   return (
     <ProtectedRoute>
       <div className="min-h-screen bg-background transition-colors pb-24 md:pb-8">
         <main className="container mx-auto px-4 py-8 md:py-12 max-w-3xl lg:max-w-6xl">
           {/* Header */}
           <div className="mb-6 flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h1 className="text-3xl md:text-4xl font-semibold text-foreground mb-1">
-                Lists
-              </h1>
-              <p className="text-muted-foreground text-sm hidden lg:block">
-                Keep related items together.
-              </p>
-              <p className="text-muted-foreground text-sm lg:hidden">
-                {lists.length} {lists.length === 1 ? 'list' : 'lists'}
-              </p>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <button
-                type="button"
-                onClick={() => setImportModalOpen(true)}
-                className="text-sm text-muted-foreground hover:text-foreground"
-              >
-                Import from image
-              </button>
-              <Button
-                onClick={() => setNewListModalOpen(true)}
-                className="flex items-center gap-1.5"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-                </svg>
-                + New list
-              </Button>
-            </div>
+            <h1 className="text-3xl md:text-4xl font-semibold text-foreground">
+              Lists
+            </h1>
+            <Button onClick={() => setNewListModalOpen(true)}>
+              New list
+            </Button>
           </div>
 
           {/* Search */}
@@ -302,7 +388,7 @@ export default function ListsPage() {
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     placeholder="Enter a list name"
-                    maxLength={120}
+                    maxLength={50}
                     className="w-full h-11 px-4 rounded-xl border border-border bg-background text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 text-base"
                     autoFocus
                   />
@@ -341,6 +427,7 @@ export default function ListsPage() {
                     if (e.key === 'Escape') setRenameListId(null);
                   }}
                   placeholder="Enter a list name"
+                  maxLength={50}
                   className="w-full h-11 px-4 rounded-xl border border-border bg-background text-foreground mb-4"
                   autoFocus
                 />
@@ -367,11 +454,12 @@ export default function ListsPage() {
 
           {/* Lists */}
           {loading ? (
-            <div className="space-y-3">
-              {[1, 2].map((i) => (
-                <Card key={i} className="animate-pulse p-4">
-                  <div className="h-5 bg-muted rounded w-3/4 mb-2" />
-                  <div className="h-4 bg-muted rounded w-1/2" />
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {[1, 2, 3].map((i) => (
+                <Card key={i} className="animate-pulse p-5 rounded-2xl">
+                  <div className="w-14 h-14 rounded-xl bg-muted mb-3" />
+                  <div className="h-4 bg-muted rounded w-3/4 mb-2" />
+                  <div className="h-3 bg-muted rounded w-1/3" />
                 </Card>
               ))}
             </div>
@@ -381,84 +469,36 @@ export default function ListsPage() {
                 {searchTerm.trim() ? "No lists match your search." : "No lists yet"}
               </p>
               <p className="text-muted-foreground text-sm mb-4">
-                {searchTerm.trim() ? "Try a different search." : "Tap + New list to create one."}
+                {searchTerm.trim() ? "Try a different search." : "Click New list to create one."}
               </p>
             </Card>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {filteredLists.map((list) => {
-                const done = list.doneCount ?? 0;
-                const total = list.itemCount ?? 0;
-                const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-                return (
-                <Card
-                  key={list.id}
-                  className="rounded-2xl shadow-sm border border-border p-5 hover:border-primary/30 transition-colors"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <Link
-                      href={`/lists/${list.id}`}
-                      className="flex-1 min-w-0"
-                    >
-                      <div className="flex items-center gap-3 mb-2">
-                        <div className="w-10 h-10 rounded-lg bg-muted flex items-center justify-center text-lg leading-none flex-shrink-0">
-                          {emojiForListName(list.name)}
-                        </div>
-                        <p className="font-semibold text-foreground truncate">{list.name}</p>
-                      </div>
-                      <p className="text-sm text-muted-foreground mb-1">
-                        {done}/{total} items
-                      </p>
-                      <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden mb-2">
-                        <div
-                          className="h-full bg-primary rounded-full transition-all"
-                          style={{ width: `${pct}%` }}
-                        />
-                      </div>
-                      <p className="text-xs text-muted-foreground">
-                        {formatUpdated(list.updatedAt)}
-                      </p>
-                    </Link>
-                    <div className="relative flex-shrink-0" data-list-menu>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        setMenuOpenId(menuOpenId === list.id ? null : list.id);
-                      }}
-                      className="h-8 w-8 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground"
-                      aria-label="List actions"
-                      disabled={!!deletingId}
-                    >
-                      <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                        <circle cx="12" cy="6" r="1.5" />
-                        <circle cx="12" cy="12" r="1.5" />
-                        <circle cx="12" cy="18" r="1.5" />
-                      </svg>
-                    </button>
-                    {menuOpenId === list.id && (
-                      <div className="absolute right-0 top-full mt-1 py-1 rounded-lg border border-border bg-card shadow-md z-10 min-w-[120px]">
-                        <button
-                          type="button"
-                          onClick={() => handleRename(list)}
-                          className="w-full px-3 py-2 text-left text-sm text-foreground hover:bg-muted"
-                        >
-                          Rename list
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteClick(list)}
-                          className="w-full px-3 py-2 text-left text-sm text-destructive hover:bg-muted"
-                        >
-                          Delete list
-                        </button>
-                      </div>
-                    )}
+            <div className="space-y-8">
+              {/* Starred section */}
+              {starredLists.length > 0 && (
+                <div>
+                  <div className="flex items-center gap-2 mb-4">
+                    <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Starred</h2>
+                    <div className="flex-1 h-px bg-border/40" />
                   </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {starredLists.map((list) => <ListCard key={list.id} list={list} />)}
                   </div>
-                </Card>
-              );
-            })}
+                </div>
+              )}
+
+              {/* All lists section */}
+              <div>
+                {starredLists.length > 0 && (
+                  <div className="flex items-center gap-2 mb-4">
+                    <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">All Lists</h2>
+                    <div className="flex-1 h-px bg-border/40" />
+                  </div>
+                )}
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {otherLists.map((list) => <ListCard key={list.id} list={list} />)}
+                </div>
+              </div>
             </div>
           )}
 

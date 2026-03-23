@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { splitBrainDump } from '@/lib/brainDumpParser';
+import { splitBrainDump, detectListIntent } from '@/lib/brainDumpParser';
 import { textToProposedTasksFromSegments } from '@/lib/task_intake';
 
 // Zod schema for rules-parsed task (due_date/due_time always set; flags for refinement; rawSegmentText for refinement)
@@ -17,9 +17,15 @@ const TaskSchema = z.object({
   inferred_time: z.boolean().optional(),
 });
 
+const ListItemSchema = z.object({
+  item: z.string().min(1),
+  listName: z.string().min(1),
+});
+
 // Zod schema for the API response
 const ParsedDumpSchema = z.object({
   tasks: z.array(TaskSchema),
+  listItems: z.array(ListItemSchema),
   summary: z.string().optional(),
 });
 
@@ -106,10 +112,26 @@ export async function POST(request: NextRequest) {
     }
     console.log(API_LOG, 'rules parse, text length', text.length);
 
-    // Canonical pipeline: split then segmentToProposedTask (Feature #1 only). Map to API shape for refine + insert.
+    // Canonical pipeline: split, classify (list intent vs task), then parse.
     const segments = splitBrainDump(text);
     const rawSegments = segments.length === 0 ? [text.trim().slice(0, 500) || 'Task'] : segments;
-    const proposed = textToProposedTasksFromSegments(rawSegments);
+
+    const taskSegments: string[] = [];
+    const listItems: { item: string; listName: string }[] = [];
+
+    for (const seg of rawSegments) {
+      const listIntent = detectListIntent(seg);
+      if (listIntent) {
+        console.log(API_LOG, 'list intent detected:', JSON.stringify(listIntent), 'from segment:', seg);
+        listItems.push(listIntent);
+      } else {
+        console.log(API_LOG, 'task segment:', seg);
+        taskSegments.push(seg);
+      }
+    }
+    console.log(API_LOG, 'split result — taskSegments:', taskSegments.length, 'listItems:', listItems.length);
+
+    const proposed = textToProposedTasksFromSegments(taskSegments);
     const tasks = proposed.map((t) => ({
       title: t.title,
       notes: null,
@@ -122,14 +144,17 @@ export async function POST(request: NextRequest) {
       inferred_date: t.inferred_date,
       inferred_time: t.inferred_time,
     }));
+
+    const totalItems = tasks.length + listItems.length;
     const parsedDump = {
       tasks,
-      summary: tasks.length === 1
-        ? 'Extracted 1 task'
-        : `Extracted ${tasks.length} tasks from your brain dump`,
+      listItems,
+      summary: totalItems === 1
+        ? 'Extracted 1 item'
+        : `Extracted ${totalItems} items from your brain dump`,
     };
     const validatedResult = ParsedDumpSchema.parse(parsedDump);
-    console.log(API_LOG, 'rules done', { taskCount: validatedResult.tasks.length });
+    console.log(API_LOG, 'rules done', { taskCount: validatedResult.tasks.length, listItemCount: validatedResult.listItems.length });
     return NextResponse.json(validatedResult);
   } catch (error: any) {
     console.error(API_LOG, 'Error', error?.message ?? error);

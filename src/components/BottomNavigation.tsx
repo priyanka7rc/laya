@@ -7,7 +7,7 @@ const navItems = [
   { name: "Home", href: "/home" },
   { name: "Tasks", href: "/tasks" },
   { name: "Lists", href: "/lists" },
-  { name: "Capture", href: "/capture" },
+  { name: "Unload", href: "/capture" },
   { name: "Profile", href: "/profile" },
 ];
 
@@ -55,7 +55,7 @@ export default function BottomNavigation() {
                     <line x1="3" y1="18" x2="3.01" y2="18" />
                   </svg>
                 )}
-                {item.name === "Capture" && (
+                {item.name === "Unload" && (
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-5 h-5">
                     <path d="M12 5v14" />
                     <path d="M5 12h14" />

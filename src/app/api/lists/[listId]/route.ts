@@ -21,9 +21,10 @@ export async function PATCH(
     }
 
     const body = await request.json().catch(() => ({}));
-    const { name } = body as { name?: string };
+    const { name, is_starred } = body as { name?: string; is_starred?: boolean };
 
-    if (!name || typeof name !== 'string' || !name.trim()) {
+    const isStarToggle = typeof is_starred === 'boolean';
+    if (!isStarToggle && (!name || typeof name !== 'string' || !name.trim())) {
       return NextResponse.json({ error: 'Enter a list name' }, { status: 400 });
     }
 
@@ -37,13 +38,17 @@ export async function PATCH(
       return NextResponse.json({ error: 'App user not found' }, { status: 404 });
     }
 
+    const updatePayload: Record<string, unknown> = {};
+    if (name && typeof name === 'string' && name.trim()) updatePayload.name = name.trim();
+    if (typeof is_starred === 'boolean') updatePayload.is_starred = is_starred;
+
     const { data, error } = await supabaseAdmin!
       .from('lists')
-      .update({ name: name.trim() })
+      .update(updatePayload)
       .eq('id', listId)
       .eq('app_user_id', appUser.id)
       .is('deleted_at', null)
-      .select('id, name, updated_at')
+      .select('id, name, is_starred, updated_at')
       .maybeSingle();
 
     if (error) {

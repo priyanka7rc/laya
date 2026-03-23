@@ -2,6 +2,7 @@
  * Rules-first brain dump parser. Fast, deterministic, no AI.
  * - splitBrainDump: split on delimiters; cautious "and" split
  * - parseOneSegmentWithRules: extract date/time, apply required defaults, return one task with flags
+ * - detectListIntent: detect "add X to [my] list of Y" patterns, returns { item, listName } or null
  * Category inference uses shared guessCategory from @/lib/categories.
  */
 
@@ -109,6 +110,53 @@ export function parseBrainDumpWithRules(text: string): ParsedTaskWithFlags[] {
     return [defaultTask];
   }
   return segments.map((seg) => parseOneSegmentWithRules(seg));
+}
+
+export interface ListIntent {
+  item: string;
+  listName: string;
+}
+
+/**
+ * Detect "add/put X to/on/in [my/the] [list of] Y [list]" patterns.
+ * Returns { item, listName } with title-cased values, or null if not a list-intent segment.
+ *
+ * Patterns handled:
+ *   "add mentalist to the list of TV shows"
+ *   "add milk to my shopping list"
+ *   "add eggs to shopping list"
+ *   "put milk on my grocery list"
+ *   "put butter in the grocery list"
+ */
+export function detectListIntent(segment: string): ListIntent | null {
+  const s = segment.trim();
+
+  // Pattern 1: add/put X to/on/in [the/my] list of Y
+  const p1 = /^(?:add|put)\s+(.+?)\s+(?:to|on|in)\s+(?:the\s+|my\s+)?list\s+of\s+(.+?)$/i;
+  const m1 = s.match(p1);
+  if (m1) {
+    return { item: toTitleCase(m1[1].trim()), listName: toTitleCase(m1[2].trim()) };
+  }
+
+  // Pattern 2: add/put X to/on/in [the/my] Y list
+  const p2 = /^(?:add|put)\s+(.+?)\s+(?:to|on|in)\s+(?:the\s+|my\s+)?(.+?)\s+list$/i;
+  const m2 = s.match(p2);
+  if (m2) {
+    return { item: toTitleCase(m2[1].trim()), listName: toTitleCase(m2[2].trim()) };
+  }
+
+  // Pattern 3: X on/in [my/the] Y list
+  const p3 = /^(.+?)\s+(?:on|in)\s+(?:my\s+|the\s+)?(.+?)\s+list$/i;
+  const m3 = s.match(p3);
+  if (m3) {
+    return { item: toTitleCase(m3[1].trim()), listName: toTitleCase(m3[2].trim()) };
+  }
+
+  return null;
+}
+
+function toTitleCase(str: string): string {
+  return str.replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 // --- Date/time/category helpers (no AI) ---

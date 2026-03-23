@@ -65,6 +65,10 @@ export default function TasksPage() {
   const [deleteConfirmTask, setDeleteConfirmTask] = useState<Task | null>(null);
   const [rescheduleDate, setRescheduleDate] = useState("");
 
+  // Desktop right panel reminder state
+  const [panelRemindAt, setPanelRemindAt] = useState("");
+  const [panelReminderCustom, setPanelReminderCustom] = useState(false);
+
   const PAGE_LIMIT = 50;
   const todayStr = getTodayStr();
 
@@ -126,6 +130,11 @@ export default function TasksPage() {
     }, delay);
     return () => clearTimeout(id);
   }, [user, searchTerm]);
+
+  useEffect(() => {
+    setPanelRemindAt("");
+    setPanelReminderCustom(false);
+  }, [editTask?.id]);
 
   const handleQuickAdd = async (
     e?: React.FormEvent,
@@ -366,6 +375,18 @@ export default function TasksPage() {
     setRescheduleDate("");
   };
 
+  const handlePanelSave = async () => {
+    if (panelRemindAt && editTask) {
+      const { error } = await supabase
+        .from("tasks")
+        .update({ remind_at: panelRemindAt })
+        .eq("id", editTask.id);
+      if (error) toast.error("Couldn't set reminder");
+    }
+    const form = document.getElementById("desktop-edit-form") as HTMLFormElement | null;
+    form?.requestSubmit();
+  };
+
   const toggleTask = async (task: Task) => {
     const newStatus = !task.is_done;
     const previousTasks = [...tasks];
@@ -466,46 +487,54 @@ export default function TasksPage() {
     const isExpanded = expandedTaskId === task.id;
     const isMenuOpen = openMenuTaskId === task.id;
     const isReminderMode = reminderTaskId === task.id;
+    const isSelected = editTask?.id === task.id;
 
     return (
       <div className={`transition-all ${animatingTasks.has(task.id) ? "opacity-50 scale-[0.99]" : ""}`}>
         {/* Main card */}
         <div
-          className={`flex items-center gap-3 bg-card border border-border shadow-sm p-4 transition-colors ${
+          className={`flex items-center gap-3 bg-card border border-border shadow-sm lg:shadow-none p-4 lg:py-2.5 lg:px-4 transition-colors lg:hover:bg-muted/30 lg:cursor-pointer ${
             isExpanded ? "rounded-t-xl border-b-0" : "rounded-xl"
-          }`}
+          } ${isSelected ? "lg:ring-2 lg:ring-primary/40 lg:bg-primary/5 lg:border-r-2 lg:border-r-primary/50" : ""}`}
+          onClick={() => setEditTask(task)}
         >
           {/* Checkbox */}
           <button
-            onClick={() => toggleTask(task)}
-            className={`flex-shrink-0 w-5 h-5 rounded-md border-2 flex items-center justify-center transition-colors tap-target ${
+            onClick={(e) => { e.stopPropagation(); toggleTask(task); }}
+            className="tap-target lg:min-w-0 lg:min-h-0 relative flex items-center justify-center shrink-0"
+            aria-label={isCompleted ? `Mark "${task.title}" as incomplete` : `Mark "${task.title}" as complete`}
+          >
+            <span className={`w-5 h-5 lg:w-[22px] lg:h-[22px] rounded-full border-2 flex items-center justify-center shrink-0 transition-colors ${
               isCompleted
                 ? "border-primary bg-primary text-primary-foreground"
                 : "border-muted-foreground/40 hover:border-primary"
-            }`}
-            aria-label={isCompleted ? `Mark "${task.title}" as incomplete` : `Mark "${task.title}" as complete`}
-          >
-            {isCompleted && (
-              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-              </svg>
-            )}
+            }`}>
+              {isCompleted && (
+                <svg className="w-3 h-3 lg:w-3 lg:h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                </svg>
+              )}
+            </span>
           </button>
 
           {/* Content */}
           <div className="flex-1 min-w-0">
-            <p className={`font-medium text-sm leading-snug ${isCompleted ? "line-through text-muted-foreground" : "text-foreground"}`}>
-              {task.title}
-            </p>
-            {task.due_time && (
-              <div className="flex items-center gap-1 mt-0.5">
-                <svg className="w-3 h-3 text-muted-foreground shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <circle cx="12" cy="12" r="10" />
-                  <path d="M12 6v6l4 2" />
-                </svg>
-                <span className="text-xs text-muted-foreground">{formatTime(task.due_time)}</span>
-              </div>
-            )}
+            {/* Mobile: stacked. Desktop: single row with time inline */}
+            <div className="lg:flex lg:items-center lg:gap-2 min-w-0">
+              <p className={`font-medium text-sm leading-snug truncate ${isCompleted ? "line-through text-muted-foreground" : "text-foreground"}`}>
+                {task.title}
+              </p>
+              {task.due_time && (
+                <div className="flex items-center gap-1 mt-0.5 lg:mt-0 lg:shrink-0">
+                  <span className="hidden lg:inline text-muted-foreground/50 text-xs">·</span>
+                  <svg className="w-3 h-3 text-muted-foreground shrink-0 lg:hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <circle cx="12" cy="12" r="10" />
+                    <path d="M12 6v6l4 2" />
+                  </svg>
+                  <span className="text-xs text-muted-foreground">{formatTime(task.due_time)}</span>
+                </div>
+              )}
+            </div>
             {(task.inferred_date || task.inferred_time) && (
               <div className="mt-1">
                 <ConfirmInferenceBadge
@@ -518,17 +547,18 @@ export default function TasksPage() {
             )}
           </div>
 
-          {/* Right side: category + meatball */}
+          {/* Right side: category chip + meatball (mobile) / trash (desktop) */}
           <div className="flex items-center gap-2 shrink-0">
             {task.category && (
               <Chip variant="category" className="text-xs py-0.5 px-2.5">
                 {task.category}
               </Chip>
             )}
-            {/* Meatball menu */}
-            <div className="relative">
+
+            {/* Mobile: meatball menu */}
+            <div className="relative lg:hidden">
               <button
-                onClick={() => setOpenMenuTaskId(isMenuOpen ? null : task.id)}
+                onClick={(e) => { e.stopPropagation(); setOpenMenuTaskId(isMenuOpen ? null : task.id); }}
                 className="p-1.5 rounded-lg text-muted-foreground hover:bg-muted transition-colors"
                 aria-label="Task options"
               >
@@ -541,11 +571,7 @@ export default function TasksPage() {
               {isMenuOpen && (
                 <div className="absolute right-0 top-full mt-1 z-30 bg-card border border-border rounded-xl shadow-lg py-1 w-44">
                   <button
-                    onClick={() => {
-                      setExpandedTaskId(task.id);
-                      setReminderTaskId(task.id);
-                      setOpenMenuTaskId(null);
-                    }}
+                    onClick={(e) => { e.stopPropagation(); setExpandedTaskId(task.id); setReminderTaskId(task.id); setOpenMenuTaskId(null); }}
                     className="w-full text-left px-4 py-2.5 text-sm text-foreground hover:bg-muted transition-colors flex items-center gap-2"
                   >
                     <svg className="w-4 h-4 text-muted-foreground shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -554,11 +580,7 @@ export default function TasksPage() {
                     Set Reminder
                   </button>
                   <button
-                    onClick={() => {
-                      setExpandedTaskId(task.id);
-                      setReminderTaskId(null);
-                      setOpenMenuTaskId(null);
-                    }}
+                    onClick={(e) => { e.stopPropagation(); setExpandedTaskId(task.id); setReminderTaskId(null); setOpenMenuTaskId(null); }}
                     className="w-full text-left px-4 py-2.5 text-sm text-foreground hover:bg-muted transition-colors flex items-center gap-2"
                   >
                     <svg className="w-4 h-4 text-muted-foreground shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -568,10 +590,7 @@ export default function TasksPage() {
                   </button>
                   <div className="my-1 h-px bg-border/60" />
                   <button
-                    onClick={() => {
-                      setDeleteConfirmTask(task);
-                      setOpenMenuTaskId(null);
-                    }}
+                    onClick={(e) => { e.stopPropagation(); setDeleteConfirmTask(task); setOpenMenuTaskId(null); }}
                     className="w-full text-left px-4 py-2.5 text-sm text-destructive hover:bg-destructive/5 transition-colors flex items-center gap-2"
                   >
                     <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -582,12 +601,23 @@ export default function TasksPage() {
                 </div>
               )}
             </div>
+
+            {/* Desktop: trash icon only */}
+            <button
+              onClick={(e) => { e.stopPropagation(); setDeleteConfirmTask(task); }}
+              className="hidden lg:flex items-center justify-center p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/5 transition-colors"
+              aria-label="Delete task"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+            </button>
           </div>
         </div>
 
-        {/* Inline expansion panel */}
+        {/* Inline expansion panel (mobile only) */}
         {isExpanded && (
-          <div className="border border-t-0 border-border rounded-b-xl bg-card overflow-hidden">
+          <div className="lg:hidden border border-t-0 border-border rounded-b-xl bg-card overflow-hidden">
             {isReminderMode ? (
               <div className="p-4">
                 <p className="text-sm font-medium text-foreground mb-1">Set a reminder</p>
@@ -701,7 +731,7 @@ export default function TasksPage() {
         <div className="flex-1 h-px bg-border/40" />
       </div>
       {!collapsed && (
-        <div className="space-y-2">{children}</div>
+        <div className="space-y-2 lg:space-y-1.5">{children}</div>
       )}
     </div>
   );
@@ -945,7 +975,7 @@ export default function TasksPage() {
               )}
             </Card>
           ) : (
-            <div className="flex flex-col lg:flex-row gap-8">
+            <div className="flex flex-col lg:flex-row gap-4 lg:gap-5 items-start">
               {/* Task list — order: Today → Upcoming → Overdue (collapsed) → Done */}
               <div className="flex-1 space-y-6 min-w-0">
                 {filteredToday.length > 0 && (
@@ -1003,7 +1033,7 @@ export default function TasksPage() {
                 )}
               </div>
 
-              {/* Click-outside overlay to close meatball menus */}
+              {/* Click-outside overlay to close mobile meatball menus */}
               {openMenuTaskId && (
                 <div
                   className="fixed inset-0 z-20"
@@ -1011,6 +1041,122 @@ export default function TasksPage() {
                   aria-hidden
                 />
               )}
+
+              {/* Desktop right-side detail / edit panel */}
+              <div className="hidden lg:block w-80 shrink-0 relative">
+                {/* Left-pointing triangle connector — visible when a task is selected */}
+                {editTask && (
+                  <div
+                    className="absolute -left-3 top-7 w-0 h-0 pointer-events-none z-10"
+                    style={{
+                      borderTop: "7px solid transparent",
+                      borderBottom: "7px solid transparent",
+                      borderRight: "7px solid hsl(var(--border))",
+                    }}
+                  />
+                )}
+                <Card className="sticky top-[88px] overflow-hidden">
+                  {!editTask ? (
+                    /* Empty state */
+                    <div className="flex flex-col items-center justify-center py-14 px-6 text-center">
+                      <div className="w-11 h-11 rounded-full bg-muted flex items-center justify-center mb-3">
+                        <svg className="w-5 h-5 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                        </svg>
+                      </div>
+                      <p className="text-sm text-muted-foreground">Select a task to edit</p>
+                    </div>
+                  ) : (
+                    <>
+                      {/* Scrollable form + reminder area */}
+                      <div className="overflow-y-auto max-h-[calc(100vh-300px)]">
+                        <TaskForm
+                          key={editTask.id}
+                          editTask={editTask}
+                          panelMode
+                          onSuccess={() => {
+                            setEditTask(null);
+                            setPanelRemindAt("");
+                            setPanelReminderCustom(false);
+                            fetchTasks();
+                          }}
+                          onError={(msg) => toast.error(msg)}
+                        />
+
+                        {/* Reminder section */}
+                        <div className="px-4 pb-5 space-y-2.5">
+                          <div className="flex items-center gap-1.5 text-xs text-muted-foreground font-medium uppercase tracking-wide">
+                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M15 17H20L18.595 13.122A6 6 0 0 0 6 9v4.5L4.5 17H9.5M15 17H9.5M15 17a3 3 0 11-5.477 0" />
+                            </svg>
+                            Reminder
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {REMINDER_OPTIONS.map((opt) => {
+                              const remindAtForOpt = editTask.dueAt
+                                ? new Date(new Date(editTask.dueAt).getTime() - opt.ms).toISOString()
+                                : null;
+                              const isChipSelected = remindAtForOpt !== null && panelRemindAt === remindAtForOpt;
+                              return (
+                                <button
+                                  key={opt.label}
+                                  onClick={() => { setPanelRemindAt(remindAtForOpt ?? ""); setPanelReminderCustom(false); }}
+                                  disabled={!remindAtForOpt}
+                                  className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${
+                                    isChipSelected
+                                      ? "bg-primary text-primary-foreground border-primary"
+                                      : "border-border text-foreground hover:bg-primary/10 hover:border-primary hover:text-primary"
+                                  } disabled:opacity-40 disabled:cursor-not-allowed`}
+                                >
+                                  {opt.label} before
+                                </button>
+                              );
+                            })}
+                            <button
+                              onClick={() => { setPanelReminderCustom(true); if (!panelReminderCustom) setPanelRemindAt(""); }}
+                              className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${
+                                panelReminderCustom
+                                  ? "bg-primary text-primary-foreground border-primary"
+                                  : "border-border text-foreground hover:bg-primary/10 hover:border-primary hover:text-primary"
+                              }`}
+                            >
+                              Other
+                            </button>
+                          </div>
+                          {panelReminderCustom && (
+                            <input
+                              type="datetime-local"
+                              value={panelRemindAt ? new Date(panelRemindAt).toISOString().slice(0, 16) : ""}
+                              onChange={(e) =>
+                                setPanelRemindAt(e.target.value ? new Date(e.target.value).toISOString() : "")
+                              }
+                              className="w-full border border-border rounded-lg px-3 py-1.5 text-sm bg-card text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20"
+                            />
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Footer: equal-width Save + Cancel */}
+                      <div className="flex gap-2 p-4 border-t border-border bg-muted/20">
+                        <button
+                          type="button"
+                          onClick={handlePanelSave}
+                          className="flex-1 h-9 bg-primary text-primary-foreground text-sm font-medium rounded-xl hover:bg-primary/90 transition-colors"
+                        >
+                          Save Changes
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setEditTask(null); setPanelRemindAt(""); setPanelReminderCustom(false); }}
+                          className="flex-1 h-9 border border-border text-sm text-foreground rounded-xl hover:bg-muted transition-colors"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </Card>
+              </div>
             </div>
           )}
 

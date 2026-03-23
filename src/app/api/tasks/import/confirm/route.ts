@@ -21,7 +21,13 @@ export async function POST(request: NextRequest) {
       app_user_id?: string | null;
     };
 
+    console.log(LOG, 'received', { taskCount: Array.isArray(proposedTasks) ? proposedTasks.length : 'not-array', source, appUserId });
+    if (Array.isArray(proposedTasks)) {
+      proposedTasks.forEach((t, i) => console.log(LOG, `task[${i}]:`, t.title, '| due:', t.due_date, t.due_time, '| cat:', t.category));
+    }
+
     if (!Array.isArray(proposedTasks) || proposedTasks.length === 0) {
+      console.warn(LOG, 'rejecting: tasks array required');
       return NextResponse.json({ error: 'tasks array required' }, { status: 400 });
     }
 
@@ -35,6 +41,7 @@ export async function POST(request: NextRequest) {
       sourceMessageId: null,
     });
 
+    console.log(LOG, 'result — inserted:', result.inserted.length, 'duplicates:', result.duplicates.length, result.duplicates);
     return NextResponse.json({ inserted: result.inserted, duplicates: result.duplicates });
   } catch (e) {
     console.error(LOG, e);

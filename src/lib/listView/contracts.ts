@@ -9,6 +9,8 @@ export interface ListViewList {
   itemCount?: number;
   /** Completed item count. Optional for backward compat. */
   doneCount?: number;
+  /** Whether the list is starred/pinned. */
+  isStarred?: boolean;
 }
 
 export interface ListViewPageInfo {

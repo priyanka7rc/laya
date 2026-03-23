@@ -14,6 +14,7 @@ type DbListRow = {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  is_starred: boolean;
 };
 
 function mapRowToList(row: DbListRow): ListViewList {
@@ -24,6 +25,7 @@ function mapRowToList(row: DbListRow): ListViewList {
     source: row.source,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    isStarred: row.is_starred ?? false,
   };
 }
 
