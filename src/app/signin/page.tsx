@@ -2,13 +2,12 @@
 
 import { useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
-import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 
 export default function SignInPage() {
   const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
-  const router = useRouter();
 
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -28,8 +27,10 @@ export default function SignInPage() {
       } else {
         setMessage('Check your email for the magic link!');
       }
-    } catch (error: any) {
-      setMessage(error.message || 'An error occurred');
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error ? error.message : 'An error occurred';
+      setMessage(message);
     } finally {
       setLoading(false);
     }
@@ -41,6 +42,9 @@ export default function SignInPage() {
         <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-8 text-center">
           Sign In
         </h1>
+        <p className="text-sm text-gray-600 dark:text-gray-300 mb-6 text-center">
+          Phone OTP is the primary login path. Use <Link href="/login" className="underline">/login</Link> for the recommended experience.
+        </p>
         <form onSubmit={handleSignIn} className="space-y-4">
           <div>
             <label htmlFor="email" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">

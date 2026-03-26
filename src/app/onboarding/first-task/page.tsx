@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import { getCurrentAppUser } from "@/lib/users/linking";
-import { supabase } from "@/lib/supabaseClient";
+import { completeWithFirstTaskOrSkip } from "@/lib/onboarding/service";
 
 export default function FirstTaskPage() {
   return (
@@ -17,6 +17,7 @@ export default function FirstTaskPage() {
 function FirstTaskInner() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [title, setTitle] = useState("");
   const [error, setError] = useState<string | null>(null);
 
@@ -27,6 +28,18 @@ function FirstTaskInner() {
       if (!active) return;
 
       if (!appUser) {
+        router.replace("/login");
+        return;
+      }
+      if (appUser.onboarding_state === "app_verified") {
+        router.replace("/onboarding/required");
+        return;
+      }
+      if (appUser.onboarding_state === "profile_required_done") {
+        router.replace("/onboarding/preferences");
+        return;
+      }
+      if (appUser.onboarding_state === "onboarding_complete") {
         router.replace("/app");
         return;
       }
@@ -39,22 +52,14 @@ function FirstTaskInner() {
     };
   }, [router]);
 
-  const markOnboardingState = async () => {
-    const appUser = await getCurrentAppUser();
-    if (!appUser) return;
-
-    const { error: updateError } = await supabase
-      .from("app_users")
-      .update({ onboarding_state: "first_task_done" })
-      .eq("id", appUser.id);
-
-    if (updateError) {
-      console.error("[first-task] update error", updateError);
-    }
-  };
-
   const handleSkip = async () => {
-    await markOnboardingState();
+    setSaving(true);
+    const result = await completeWithFirstTaskOrSkip({});
+    setSaving(false);
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
     router.replace("/app");
   };
 
@@ -62,38 +67,14 @@ function FirstTaskInner() {
     e.preventDefault();
     setError(null);
 
-    if (!title.trim()) {
-      setError("Add a short task or skip for now.");
+    setSaving(true);
+    const result = await completeWithFirstTaskOrSkip({ title });
+    setSaving(false);
+    if (!result.ok) {
+      setError(result.error);
       return;
     }
 
-    const appUser = await getCurrentAppUser();
-    if (!appUser) {
-      router.replace("/app");
-      return;
-    }
-
-    const { data: { session } } = await supabase.auth.getSession();
-    const res = await fetch("/api/tasks/create", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
-      },
-      body: JSON.stringify({
-        text: title.trim(),
-        allowDuplicate: true,
-        app_user_id: appUser.id,
-      }),
-    });
-
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      setError((data && data.error) || "Could not save task. Please try again.");
-      return;
-    }
-
-    await markOnboardingState();
     router.replace("/app");
   };
 
@@ -123,16 +104,18 @@ function FirstTaskInner() {
           {error && <p className="text-sm text-red-500">{error}</p>}
           <button
             type="submit"
-            className="w-full bg-black text-white py-2 rounded"
+            disabled={saving}
+            className="w-full bg-black text-white py-2 rounded disabled:opacity-60"
           >
-            Save task
+            {saving ? "Saving..." : "Save task"}
           </button>
         </form>
 
         <button
           type="button"
           onClick={handleSkip}
-          className="w-full border border-gray-300 py-2 rounded text-sm"
+          disabled={saving}
+          className="w-full border border-gray-300 py-2 rounded text-sm disabled:opacity-60"
         >
           Skip for now
         </button>

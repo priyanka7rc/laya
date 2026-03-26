@@ -1,33 +1,57 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/AuthProvider";
-import { normalizeIndianPhone } from "@/lib/phone";
+import { normalizeToE164India } from "@/lib/auth/phone";
 import { sendOtp, verifyOtp } from "@/lib/auth/otp";
-import { linkAuthUserToAppUser, getCurrentAppUser } from "@/lib/users/linking";
+import {
+  getCurrentAppUser,
+  linkAuthUserToAppUser,
+  resolvePostAuthRoute,
+} from "@/lib/users/linking";
+import { supabase } from "@/lib/supabaseClient";
 
 export default function LoginPage() {
   const router = useRouter();
   const { user, loading } = useAuth();
 
   const [step, setStep] = useState<"phone" | "otp">("phone");
-  const [rawPhone, setRawPhone] = useState("");
+  const [rawPhone, setRawPhone] = useState("+91 ");
   const [phoneE164, setPhoneE164] = useState<string | null>(null);
   const [otp, setOtp] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [resendSeconds, setResendSeconds] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
-  // If already logged in, go to app
-  if (!loading && user) {
-    router.replace("/app");
-  }
+  useEffect(() => {
+    if (resendSeconds <= 0) return;
+    const timer = window.setInterval(() => {
+      setResendSeconds((prev) => (prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [resendSeconds]);
+
+  useEffect(() => {
+    let active = true;
+    if (loading || !user) return;
+
+    (async () => {
+      const appUser = await getCurrentAppUser();
+      if (!active) return;
+      router.replace(resolvePostAuthRoute(appUser));
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [loading, user, router]);
 
   const handleSendOtp = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
-    const normalized = normalizeIndianPhone(rawPhone);
+    const normalized = normalizeToE164India(rawPhone);
     if (!normalized.ok) {
       setError(normalized.error);
       return;
@@ -44,6 +68,7 @@ export default function LoginPage() {
 
     setPhoneE164(normalized.value);
     setStep("otp");
+    setResendSeconds(60);
   };
 
   const handleVerifyOtp = async (e: React.FormEvent) => {
@@ -61,8 +86,10 @@ export default function LoginPage() {
       return;
     }
 
-    // Supabase session is now set; fetch user and link to app_user
-    const { data: { user: authedUser } } = await (await import("@/lib/supabaseClient")).supabase.auth.getUser();
+    // Supabase session is now set; fetch user and link to app_user.
+    const {
+      data: { user: authedUser },
+    } = await supabase.auth.getUser();
 
     if (!authedUser) {
       setSubmitting(false);
@@ -82,27 +109,22 @@ export default function LoginPage() {
       return;
     }
 
-    // Decide where to go based on onboarding_state
     const appUser = await getCurrentAppUser();
     setSubmitting(false);
+    router.replace(resolvePostAuthRoute(appUser));
+  };
 
-    if (!appUser) {
-      router.replace("/app");
+  const handleResend = async () => {
+    if (!phoneE164 || resendSeconds > 0 || submitting) return;
+    setError(null);
+    setSubmitting(true);
+    const result = await sendOtp(phoneE164);
+    setSubmitting(false);
+    if (!result.ok) {
+      setError(result.error.message);
       return;
     }
-
-    if (
-      appUser.onboarding_state === "whatsapp_started" ||
-      appUser.onboarding_state === "app_verified"
-    ) {
-      router.replace("/onboarding");
-    } else if (
-      appUser.onboarding_state === "onboarding_complete"
-    ) {
-      router.replace("/onboarding/first-task");
-    } else {
-      router.replace("/app");
-    }
+    setResendSeconds(60);
   };
 
   return (
@@ -120,7 +142,7 @@ export default function LoginPage() {
               <input
                 type="tel"
                 className="w-full border rounded px-3 py-2 text-base"
-                placeholder="10-digit Indian mobile"
+                placeholder="+91 9876543210"
                 value={rawPhone}
                 onChange={(e) => setRawPhone(e.target.value)}
               />
@@ -155,6 +177,16 @@ export default function LoginPage() {
                 Code sent to {phoneE164}. It may take a moment to arrive.
               </p>
             )}
+            <button
+              type="button"
+              onClick={handleResend}
+              disabled={submitting || resendSeconds > 0}
+              className="w-full border border-gray-300 py-2 rounded text-sm disabled:opacity-60"
+            >
+              {resendSeconds > 0
+                ? `Resend code in ${resendSeconds}s`
+                : "Resend code"}
+            </button>
             {error && <p className="text-sm text-red-500">{error}</p>}
             <button
               type="submit"

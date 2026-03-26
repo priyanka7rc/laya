@@ -18,6 +18,16 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
+## Testing
+
+This repo uses **Vitest** as the default local test runner. Common commands:
+
+- `npm test` — run the suite once
+- `npm run test:watch` — watch mode
+- `npm run type-check` — TypeScript (`tsc --noEmit`)
+
+Tests live under `src/__tests__/**/*.test.ts`. Some suites exercise Supabase-backed modules; depending on `.env.local` and network, you may see noisy runtime logs even when all assertions pass. That is an environment/runtime concern, not a sign of broken test wiring.
+
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
 ## Learn More

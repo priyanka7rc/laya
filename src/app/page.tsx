@@ -14,7 +14,7 @@ export default function RootPage() {
       if (user) {
         router.replace('/home');
       } else {
-        router.replace('/signin');
+        router.replace('/login');
       }
     }
   }, [user, loading, router]);

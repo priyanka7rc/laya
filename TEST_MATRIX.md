@@ -109,8 +109,7 @@ Nav (mobile): **Home**, **Tasks**, **Lists**, **Unload** (`/capture`), **Profile
 
 | # | Method | Path | Auth | Steps / expected | Tier |
 |---|--------|------|------|------------------|------|
-| [ ] | GET | `/api/whatsapp-webhook` | Meta verify token | Challenge echo | S |
-| [ ] | POST | `/api/whatsapp-webhook` | Provider signature | Inbound message processed | S |
+| [ ] | POST | `/api/whatsapp-webhook` | Gupshup payload | Inbound message processed | S |
 | [ ] | POST | `/api/link-whatsapp` | Bearer | Links phone to user | S |
 | [ ] | POST | `/api/jobs/whatsapp-reminder` | `x-cron-secret` | `runReminderJob` completes | R |
 | [ ] | POST | `/api/jobs/whatsapp-digest` | `x-cron-secret` | `runDailyDigestJob` completes | R |
@@ -188,7 +187,7 @@ Tests use Jest-style `describe` / `test`. **There is no `npm test` script in `pa
 | `src/__tests__/taskViewTime.upcomingDays.test.ts` | Upcoming days |
 | `src/__tests__/taskViewUpcoming.test.ts` | Upcoming view |
 | `src/__tests__/taskViewSearch.test.ts` | Search |
-| `src/__tests__/taskViewSearch.termFloor.test.ts` | Search term floor |';?.q       Q
+| `src/__tests__/taskViewSearch.termFloor.test.ts` | Search term floor |
 | `src/__tests__/taskViewPagination.test.ts` | Pagination |
 | `src/__tests__/taskViewPagination.behavior.test.ts` | Pagination behavior |
 | `src/__tests__/insertTasksWithDedupe.remindAt.test.ts` | Dedupe + remind_at |

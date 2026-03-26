@@ -50,7 +50,7 @@ This document consolidates all features referenced and implemented in the Laya c
 | Feature | Description |
 |---------|-------------|
 | **WhatsApp linking** | Link phone to auth account; link-whatsapp page + API |
-| **WhatsApp webhook** | Gupshup/Meta verification + inbound routing |
+| **WhatsApp webhook** | Gupshup inbound POST + routing (`/api/whatsapp-webhook`) |
 | **WhatsApp 24h window** | canSendFreeformMessage; template fallback outside 24h |
 | **WhatsApp STOP/START** | opted_out, daily_digest_enabled |
 | **Reply anchoring** | messages.provider_message_id + task_ids + list_ids |

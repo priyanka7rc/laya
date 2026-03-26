@@ -12,7 +12,7 @@ export type NormalizedPhoneResult =
  * - If length 12 and starts with 91 -> prepend +
  * - Final form must be +91 followed by 10 digits
  */
-export function normalizeIndianPhone(input: string): NormalizedPhoneResult {
+export function normalizeToE164India(input: string): NormalizedPhoneResult {
   const digits = input.replace(/\D/g, '');
 
   if (!digits) {
@@ -53,4 +53,7 @@ export function normalizeIndianPhone(input: string): NormalizedPhoneResult {
 
   return { ok: true, value: cleaned };
 }
+
+// Backward-compatible alias for older imports.
+export const normalizeIndianPhone = normalizeToE164India;
 

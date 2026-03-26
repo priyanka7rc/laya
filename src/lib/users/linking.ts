@@ -1,14 +1,25 @@
 import { supabase } from '@/lib/supabaseClient';
 
+export type OnboardingState =
+  | 'app_verified'
+  | 'profile_required_done'
+  | 'preferences_done'
+  | 'onboarding_complete';
+
 export interface AppUser {
   id: string;
   auth_user_id: string | null;
   phone_e164: string | null;
   email: string | null;
-  onboarding_state: string;
+  onboarding_state: OnboardingState;
   has_app_account: boolean;
   timezone?: string | null;
   display_name?: string | null;
+  city?: string | null;
+  country?: string | null;
+  household_mode?: 'run_most' | 'shared' | 'support' | null;
+  reminder_window_pref?: 'morning' | 'afternoon' | 'evening' | null;
+  whatsapp_assistant_enabled?: boolean;
 }
 
 export async function linkAuthUserToAppUser(params: {
@@ -70,5 +81,13 @@ export async function getCurrentAppUser(): Promise<AppUser | null> {
     console.error('[users][getCurrentAppUser] unexpected error', err);
     return null;
   }
+}
+
+export function resolvePostAuthRoute(appUser: AppUser | null): string {
+  if (!appUser) return '/onboarding/required';
+  if (appUser.onboarding_state === 'onboarding_complete') return '/app';
+  if (appUser.onboarding_state === 'preferences_done') return '/onboarding/first-task';
+  if (appUser.onboarding_state === 'profile_required_done') return '/onboarding/preferences';
+  return '/onboarding/required';
 }
 

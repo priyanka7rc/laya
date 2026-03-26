@@ -1,5 +1,7 @@
 # WhatsApp Integration Setup Guide
 
+**Inbound:** The app implements **Gupshup-only** handling in `src/app/api/whatsapp-webhook/route.ts` (POST). There is no Meta `hub.*` GET verification in code. Sections below that reference Meta / `WHATSAPP_VERIFY_TOKEN` / `WHATSAPP_ACCESS_TOKEN` are **legacy** and not required for the current runtime.
+
 ## 1. Add Environment Variables
 
 Add these to your `/Users/priyankavijayakumar/laya/.env.local` file:
