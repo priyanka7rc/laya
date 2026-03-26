@@ -6,6 +6,7 @@
 // If source_message_id exists, it is the single source of truth for idempotency.
 
 import { createClient } from '@supabase/supabase-js';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import type { ProposedTask } from '@/lib/task_intake';
 import type { TaskSource } from '@/lib/taskSources';
 import { toHHMM } from '@/lib/taskRulesParser';
@@ -36,6 +37,25 @@ export interface InsertTasksWithDedupeParams {
   sourceMessageId?: string | null;
 }
 
+async function resolveAppUserIdOrThrow(supabase: SupabaseClient, params: {
+  appUserId: string | null;
+  userId: string;
+}): Promise<string> {
+  if (params.appUserId) return params.appUserId;
+
+  const { data: appUser, error } = await supabase
+    .from('app_users')
+    .select('id')
+    .eq('auth_user_id', params.userId)
+    .maybeSingle<{ id: string }>();
+
+  if (error || !appUser?.id) {
+    throw new Error('App user not found for task insert');
+  }
+
+  return appUser.id;
+}
+
 export async function insertTasksWithDedupe(
   params: InsertTasksWithDedupeParams
 ): Promise<InsertTasksResult> {
@@ -53,6 +73,11 @@ export async function insertTasksWithDedupe(
     process.env.SUPABASE_SERVICE_ROLE_KEY!
   );
 
+  const resolvedAppUserId = await resolveAppUserIdOrThrow(supabase, {
+    appUserId,
+    userId,
+  });
+
   // Strong idempotency: if source_message_id is present and we have already
   // created any task for this user + source_message_id, short-circuit before
   // running 5-second duplicate-window logic.
@@ -60,7 +85,7 @@ export async function insertTasksWithDedupe(
     const { data: existingBySource } = await supabase
       .from('tasks')
       .select('id')
-      .eq('user_id', userId)
+      .eq('app_user_id', resolvedAppUserId)
       .eq('source_message_id', sourceMessageId)
       .limit(1);
 
@@ -79,7 +104,7 @@ export async function insertTasksWithDedupe(
   const { data: existingTasks } = await supabase
     .from('tasks')
     .select('id, title, due_date, due_time, created_at')
-    .eq('user_id', userId)
+    .eq('app_user_id', resolvedAppUserId)
     .order('created_at', { ascending: false })
     .limit(200);
 
@@ -99,24 +124,13 @@ export async function insertTasksWithDedupe(
   // Resolve a per-user timezone once for this batch, defaulting to IST.
   let userTz = DEFAULT_TZ;
   try {
-    if (appUserId) {
-      const { data: appUser } = await supabase
-        .from('app_users')
-        .select('timezone')
-        .eq('id', appUserId)
-        .maybeSingle<{ timezone: string | null }>();
-      if (appUser?.timezone) {
-        userTz = appUser.timezone;
-      }
-    } else {
-      const { data: appUser } = await supabase
-        .from('app_users')
-        .select('timezone')
-        .eq('auth_user_id', userId)
-        .maybeSingle<{ timezone: string | null }>();
-      if (appUser?.timezone) {
-        userTz = appUser.timezone;
-      }
+    const { data: appUser } = await supabase
+      .from('app_users')
+      .select('timezone')
+      .eq('id', resolvedAppUserId)
+      .maybeSingle<{ timezone: string | null }>();
+    if (appUser?.timezone) {
+      userTz = appUser.timezone;
     }
   } catch (e) {
     console.error('[insertTasksWithDedupe] failed to resolve user timezone, using default', e);
@@ -166,7 +180,7 @@ export async function insertTasksWithDedupe(
 
     const payload = {
       user_id: userId,
-      app_user_id: appUserId,
+      app_user_id: resolvedAppUserId,
       source,
       source_message_id: sourceMessageId,
       title: (task.title ?? '').slice(0, 120),

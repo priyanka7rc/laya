@@ -1,29 +1,31 @@
 "use client";
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
-import { useAuth } from './AuthProvider';
 import { validateTaskQuickAdd } from '@/lib/validation';
-import { getCurrentAppUser } from '@/lib/users/linking';
-import { TASK_SOURCES } from '@/lib/taskSources';
 import { toHHMM } from '@/lib/taskRulesParser';
 
 interface TaskFormProps {
   onSuccess?: () => void;
   onError?: (error: string) => void;
-  editTask?: any;
+  editTask?: {
+    id: string;
+    title?: string | null;
+    notes?: string | null;
+    category?: string | null;
+    due_date?: string | null;
+    due_time?: string | null;
+  } | null;
   panelMode?: boolean;
 }
 
 export default function TaskForm({ onSuccess, onError, editTask, panelMode }: TaskFormProps) {
-  const { user } = useAuth();
   const [title, setTitle] = useState(editTask?.title || '');
   const [notes, setNotes] = useState(editTask?.notes || '');
   const [category, setCategory] = useState(editTask?.category || '');
   const [dueDate, setDueDate] = useState(editTask?.due_date || '');
   const [dueTime, setDueTime] = useState(editTask?.due_time || '');
   const [loading, setLoading] = useState(false);
-  const [generatingCategory, setGeneratingCategory] = useState(false);
 
   // ← Add validation errors state
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
@@ -58,7 +60,7 @@ export default function TaskForm({ onSuccess, onError, editTask, panelMode }: Ta
       }
 
       // ← Continue with save (use validated data)
-      const { alert_count, alert_offsets, ...dbData } = validation.data!;
+      const { ...dbData } = validation.data!;
 
       if (editTask) {
         // Edit: route through canonical update API (schedule recompute + ownership in server).
@@ -99,15 +101,6 @@ export default function TaskForm({ onSuccess, onError, editTask, panelMode }: Ta
         // Create mode: route through canonical /api/tasks/create so parsing,
         // schedule defaults, inferred flags, and dedupe are handled centrally.
 
-        // Optional app user linkage (non-blocking)
-        let appUserId: string | null = null;
-        try {
-          const appUser = await getCurrentAppUser();
-          appUserId = appUser?.id ?? null;
-        } catch {
-          // If app user lookup fails, fall back to auth user only.
-        }
-
         const { data: { session } } = await supabase.auth.getSession();
 
         const res = await fetch('/api/tasks/create', {
@@ -121,13 +114,17 @@ export default function TaskForm({ onSuccess, onError, editTask, panelMode }: Ta
             due_date: dbData.due_date || undefined,
             due_time: dbData.due_time || undefined,
             allowDuplicate: true,
-            app_user_id: appUserId,
           }),
         });
 
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
-          const msg = (data && typeof data === 'object' && 'error' in data && (data as any).error) || 'Failed to save task';
+          const msg =
+            (data &&
+              typeof data === 'object' &&
+              'error' in data &&
+              (data as { error?: string }).error) ||
+            'Failed to save task';
           if (onError) onError(msg);
           return;
         }
@@ -142,7 +139,7 @@ export default function TaskForm({ onSuccess, onError, editTask, panelMode }: Ta
       setValidationErrors({});  // ← Clear errors on success
       
       if (onSuccess) onSuccess();
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Error saving task:', error);
       
       if (onError) {

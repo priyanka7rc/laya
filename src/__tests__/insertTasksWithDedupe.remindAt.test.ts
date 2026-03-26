@@ -1,4 +1,5 @@
 import { insertTasksWithDedupe } from '@/server/tasks/insertTasksWithDedupe';
+import type { ProposedTask } from '@/lib/task_intake';
 
 // This test focuses on remind_at computation logic indirectly by inserting a task
 // and asserting no error; direct value assertion would require a readable view
@@ -17,9 +18,9 @@ describe('insertTasksWithDedupe remind_at', () => {
           inferred_date: false,
           inferred_time: false,
         },
-      ] as any,
+      ] as ProposedTask[],
       userId: '00000000-0000-0000-0000-000000000000',
-      appUserId: null,
+      appUserId: '11111111-1111-1111-1111-111111111111',
       allowDuplicateIndices: [0],
     });
 

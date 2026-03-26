@@ -7,6 +7,7 @@ import { getAuthUserFromRequest } from '@/app/api/auth-helpers';
 import { textToProposedTasksFromSegments, type ProposedTask } from '@/lib/task_intake';
 import { insertTasksWithDedupe } from '@/server/tasks/insertTasksWithDedupe';
 import { TASK_SOURCES } from '@/lib/taskSources';
+import { supabaseAdmin } from '@/lib/supabaseClient';
 
 const TITLE_MAX_LENGTH = 120;
 const LOG = '[tasks/create]';
@@ -23,13 +24,11 @@ export async function POST(request: NextRequest) {
       due_date: dueDateOverride,
       due_time: dueTimeOverride,
       allowDuplicate = false,
-      app_user_id: appUserId = null,
     } = body as {
       text?: string;
       due_date?: string;
       due_time?: string;
       allowDuplicate?: boolean;
-      app_user_id?: string | null;
     };
 
     const trimmed = typeof text === 'string' ? text.trim() : '';
@@ -46,6 +45,19 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { error: 'Task title cannot contain line breaks' },
         { status: 400 }
+      );
+    }
+
+    const { data: appUser, error: auErr } = await supabaseAdmin!
+      .from('app_users')
+      .select('id')
+      .eq('auth_user_id', user.id)
+      .maybeSingle<{ id: string }>();
+
+    if (auErr || !appUser) {
+      return NextResponse.json(
+        { error: 'App user not found. Please sign in again.' },
+        { status: 404 }
       );
     }
 
@@ -69,7 +81,7 @@ export async function POST(request: NextRequest) {
     const result = await insertTasksWithDedupe({
       tasks: [task],
       userId: user.id,
-      appUserId: appUserId ?? null,
+      appUserId: appUser.id,
       allowDuplicateIndices: allowDuplicate ? [0] : [],
       source: TASK_SOURCES.WEB_KEYBOARD,
       sourceMessageId: null,

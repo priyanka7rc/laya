@@ -9,6 +9,32 @@ import { trackDumpParse } from '@/lib/analytics';
 import { getCurrentAppUser } from '@/lib/users/linking';
 import { TASK_SOURCES } from '@/lib/taskSources';
 
+type SpeechRecognitionAlternativeLite = { transcript: string };
+type SpeechRecognitionResultLite = {
+  isFinal: boolean;
+  0: SpeechRecognitionAlternativeLite;
+};
+type SpeechRecognitionEventLite = {
+  resultIndex: number;
+  results: ArrayLike<SpeechRecognitionResultLite>;
+};
+type SpeechRecognitionErrorEventLite = { error: string };
+type BrowserSpeechRecognition = {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  start: () => void;
+  stop: () => void;
+  onresult: ((event: SpeechRecognitionEventLite) => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEventLite) => void) | null;
+  onend: (() => void) | null;
+};
+type BrowserSpeechRecognitionCtor = new () => BrowserSpeechRecognition;
+type BrowserWindowWithSpeech = Window & {
+  SpeechRecognition?: BrowserSpeechRecognitionCtor;
+  webkitSpeechRecognition?: BrowserSpeechRecognitionCtor;
+};
+
 export default function FloatingBrainDump() {
   const { user } = useAuth();
   const router = useRouter();
@@ -19,13 +45,14 @@ export default function FloatingBrainDump() {
   
   // Voice recording states
   const [isListening, setIsListening] = useState(false);
-  const [transcript, setTranscript] = useState('');
-  const recognitionRef = useRef<any>(null);
+  const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
 
   useEffect(() => {
     // Initialize Speech Recognition
     if (typeof window !== 'undefined') {
-      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      const speechWindow = window as BrowserWindowWithSpeech;
+      const SpeechRecognition =
+        speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
       
       if (SpeechRecognition) {
         recognitionRef.current = new SpeechRecognition();
@@ -33,7 +60,7 @@ export default function FloatingBrainDump() {
         recognitionRef.current.interimResults = true;
         recognitionRef.current.lang = 'en-US';
 
-        recognitionRef.current.onresult = (event: any) => {
+        recognitionRef.current.onresult = (event: SpeechRecognitionEventLite) => {
           let interimTranscript = '';
           let finalTranscript = '';
 
@@ -46,7 +73,6 @@ export default function FloatingBrainDump() {
             }
           }
 
-          setTranscript(prev => prev + finalTranscript);
           // Show interim results in real-time
           if (interimTranscript) {
             setContent(prev => {
@@ -58,7 +84,7 @@ export default function FloatingBrainDump() {
           }
         };
 
-        recognitionRef.current.onerror = (event: any) => {
+        recognitionRef.current.onerror = (event: SpeechRecognitionErrorEventLite) => {
           console.error('Speech recognition error:', event.error);
           setIsListening(false);
           if (event.error !== 'aborted' && event.error !== 'no-speech') {
@@ -81,7 +107,6 @@ export default function FloatingBrainDump() {
 
   const startListening = () => {
     if (recognitionRef.current) {
-      setTranscript('');
       setIsListening(true);
       recognitionRef.current.start();
     } else {
@@ -158,10 +183,21 @@ export default function FloatingBrainDump() {
 
       console.log(LOG, '6. Resolving app user...');
       const appUser = await getCurrentAppUser();
-      const appUserId = appUser?.id ?? null;
-      console.log(LOG, '6. App user', appUserId ? { appUserId } : 'none (tasks will use user_id only)');
+      if (!appUser?.id) {
+        setToast('Account not linked. Please sign in again.');
+        return;
+      }
+      console.log(LOG, '6. App user', { appUserId: appUser.id });
 
-      const proposedTasks = tasks.map((t: any) => ({
+      const proposedTasks = tasks.map((t: {
+        title: string;
+        due_date?: string | null;
+        due_time?: string | null;
+        category?: string | null;
+        inferred_date?: boolean;
+        inferred_time?: boolean;
+        rawSegmentText?: string | null;
+      }) => ({
         title: t.title,
         due_date: t.due_date,
         due_time: t.due_time,
@@ -178,7 +214,6 @@ export default function FloatingBrainDump() {
         body: JSON.stringify({
           tasks: proposedTasks,
           source: TASK_SOURCES.WEB_BRAIN_DUMP,
-          app_user_id: appUserId,
         }),
       });
 
@@ -193,7 +228,6 @@ export default function FloatingBrainDump() {
       trackDumpParse(inserted?.length ?? 0);
 
       setContent('');
-      setTranscript('');
       setIsOpen(false);
 
       const currentPath = window.location.pathname;
@@ -214,7 +248,7 @@ export default function FloatingBrainDump() {
       // Fire-and-forget: refine in background; refresh list if any task was updated (failure-safe, non-blocking)
       if (inserted?.length && session?.access_token) {
         const dupSet = new Set((duplicates ?? []).map((d: { index: number }) => d.index));
-        const insertedIndices = tasks.map((_: any, i: number) => i).filter((i: number) => !dupSet.has(i));
+        const insertedIndices = tasks.map((_: unknown, i: number) => i).filter((i: number) => !dupSet.has(i));
         const refinePayload = insertedIndices.slice(0, inserted.length).map((taskIdx: number, j: number) => ({
           id: inserted[j]?.id,
           rawSegmentText: tasks[taskIdx].rawSegmentText ?? '',
@@ -224,7 +258,7 @@ export default function FloatingBrainDump() {
           category: tasks[taskIdx].category,
           dueDateWasDefaulted: tasks[taskIdx].dueDateWasDefaulted,
           dueTimeWasDefaulted: tasks[taskIdx].dueTimeWasDefaulted,
-        })).filter((r: any) => r.id);
+        })).filter((r: { id?: string }) => r.id);
         if (refinePayload.length > 0) {
           fetch('/api/refineTasks', {
             method: 'POST',
@@ -232,8 +266,8 @@ export default function FloatingBrainDump() {
             body: JSON.stringify({ tasks: refinePayload, fullDumpText: content.trim() || undefined }),
           })
             .then((res) => res.ok ? res.json() : null)
-            .then((body: any) => {
-              if (body?.refined && body?.updatedCount > 0) {
+            .then((body: { refined?: boolean; updatedCount?: number } | null) => {
+              if (body?.refined && typeof body.updatedCount === 'number' && body.updatedCount > 0) {
                 console.log(LOG, 'Refinement updated', body.updatedCount, 'task(s)');
                 router.refresh();
               }
@@ -241,12 +275,10 @@ export default function FloatingBrainDump() {
             .catch(() => { /* failure-safe: no UI impact */ });
         }
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error(LOG, 'Failed', {
-        message: error?.message,
-        code: error?.code,
-        details: error?.details,
-        stack: error?.stack?.split('\n').slice(0, 3),
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack?.split('\n').slice(0, 3) : undefined,
       });
       setToast("That didn't work - want to try again?");
     } finally {
