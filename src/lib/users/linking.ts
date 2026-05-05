@@ -20,6 +20,10 @@ export interface AppUser {
   household_mode?: 'run_most' | 'shared' | 'support' | null;
   reminder_window_pref?: 'morning' | 'afternoon' | 'evening' | null;
   whatsapp_assistant_enabled?: boolean;
+  seen_home_demo?: boolean;
+  seen_tasks_demo?: boolean;
+  seen_lists_demo?: boolean;
+  seen_unload_demo?: boolean;
 }
 
 export async function linkAuthUserToAppUser(params: {

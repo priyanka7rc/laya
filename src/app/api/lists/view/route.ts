@@ -34,7 +34,9 @@ export async function GET(request: NextRequest) {
       limit,
     });
 
-    return NextResponse.json(result);
+    return NextResponse.json(result, {
+      headers: { 'Cache-Control': 'private, max-age=0, stale-while-revalidate=30' },
+    });
   } catch (e) {
     console.error(LOG, e);
     return NextResponse.json({ error: 'Failed to load lists' }, { status: 500 });

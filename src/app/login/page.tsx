@@ -86,7 +86,6 @@ export default function LoginPage() {
       return;
     }
 
-    // Supabase session is now set; fetch user and link to app_user.
     const {
       data: { user: authedUser },
     } = await supabase.auth.getUser();
@@ -128,30 +127,30 @@ export default function LoginPage() {
   };
 
   return (
-    <main className="min-h-screen flex flex-col items-center justify-center px-4">
+    <main className="min-h-screen flex flex-col items-center justify-center px-4 bg-background">
       <div className="w-full max-w-sm space-y-6">
-        <h1 className="text-2xl font-semibold text-center">Sign in</h1>
-        <p className="text-sm text-center text-gray-500">
+        <h1 className="text-2xl font-semibold text-center text-foreground">Sign in</h1>
+        <p className="text-sm text-center text-muted-foreground">
           Enter your phone number to get a one-time code.
         </p>
 
         {step === "phone" && (
           <form onSubmit={handleSendOtp} className="space-y-4">
             <div className="space-y-2">
-              <label className="text-sm">Phone number</label>
+              <label className="text-sm text-foreground">Phone number</label>
               <input
                 type="tel"
-                className="w-full border rounded px-3 py-2 text-base"
+                className="w-full border border-border rounded px-3 py-2 text-base bg-elevated text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
                 placeholder="+91 9876543210"
                 value={rawPhone}
                 onChange={(e) => setRawPhone(e.target.value)}
               />
             </div>
-            {error && <p className="text-sm text-red-500">{error}</p>}
+            {error && <p className="text-sm text-danger-foreground">{error}</p>}
             <button
               type="submit"
               disabled={submitting}
-              className="w-full bg-black text-white py-2 rounded disabled:opacity-60"
+              className="w-full bg-primary text-primary-foreground py-2 rounded disabled:opacity-60 hover:bg-primary/90 transition-colors"
             >
               {submitting ? "Sending..." : "Send code"}
             </button>
@@ -161,19 +160,19 @@ export default function LoginPage() {
         {step === "otp" && (
           <form onSubmit={handleVerifyOtp} className="space-y-4">
             <div className="space-y-2">
-              <label className="text-sm">Enter code</label>
+              <label className="text-sm text-foreground">Enter code</label>
               <input
                 type="text"
                 inputMode="numeric"
                 maxLength={6}
-                className="w-full border rounded px-3 py-2 text-base tracking-widest text-center"
+                className="w-full border border-border rounded px-3 py-2 text-base tracking-widest text-center bg-elevated text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
                 placeholder="123456"
                 value={otp}
                 onChange={(e) => setOtp(e.target.value)}
               />
             </div>
             {phoneE164 && (
-              <p className="text-xs text-gray-500">
+              <p className="text-xs text-muted-foreground">
                 Code sent to {phoneE164}. It may take a moment to arrive.
               </p>
             )}
@@ -181,17 +180,17 @@ export default function LoginPage() {
               type="button"
               onClick={handleResend}
               disabled={submitting || resendSeconds > 0}
-              className="w-full border border-gray-300 py-2 rounded text-sm disabled:opacity-60"
+              className="w-full border border-border py-2 rounded text-sm text-foreground disabled:opacity-60 hover:bg-muted transition-colors"
             >
               {resendSeconds > 0
                 ? `Resend code in ${resendSeconds}s`
                 : "Resend code"}
             </button>
-            {error && <p className="text-sm text-red-500">{error}</p>}
+            {error && <p className="text-sm text-danger-foreground">{error}</p>}
             <button
               type="submit"
               disabled={submitting}
-              className="w-full bg-black text-white py-2 rounded disabled:opacity-60"
+              className="w-full bg-primary text-primary-foreground py-2 rounded disabled:opacity-60 hover:bg-primary/90 transition-colors"
             >
               {submitting ? "Verifying..." : "Verify and continue"}
             </button>
@@ -201,4 +200,3 @@ export default function LoginPage() {
     </main>
   );
 }
-

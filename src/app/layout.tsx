@@ -4,12 +4,10 @@ import "./globals.css";
 import AuthProvider from "@/components/AuthProvider";
 import ConditionalNav from "@/components/ConditionalNav";
 import ShellWrapper from "@/components/ShellWrapper";
-import FloatingBrainDump from "@/components/FloatingBrainDump";
 import { ToastProvider } from "@/context/ToastContext";
 import { ToastViewport } from "@/components/ui/Toast";
 import { PostHogProvider } from "@/components/PostHogProvider";
 import { ThemeProvider } from "@/context/ThemeContext";
-import ThemeToggle from "@/components/ThemeToggle";
 import GlobalErrorHandler from "@/components/GlobalErrorHandler";
 
 const geistSans = Geist({
@@ -38,18 +36,26 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const appearanceInitScript = `
+(function(){
+  var K='laya-appearance';
+  function parse(v){
+    if(v==='light'||v==='dark'||v==='system')return v;
+    return 'system';
+  }
+  try{
+    var a=parse(localStorage.getItem(K));
+    var eff=a==='light'?'light':a==='dark'?'dark':(window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');
+    var r=document.documentElement;
+    r.classList.remove('light','dark');
+    r.classList.add(eff);
+  }catch(e){}
+})();`;
+
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="en" className="light" suppressHydrationWarning>
       <head>
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `
-              try {
-                document.documentElement.classList.remove('dark');
-              } catch (e) {}
-            `,
-          }}
-        />
+        <script dangerouslySetInnerHTML={{ __html: appearanceInitScript }} />
       </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} bg-background text-foreground antialiased transition-colors duration-300`}
@@ -59,10 +65,8 @@ export default function RootLayout({
         <AuthProvider>
               <ToastProvider>
                 <GlobalErrorHandler />
-                <ThemeToggle />
             <ShellWrapper>{children}</ShellWrapper>
             <ConditionalNav />
-            <FloatingBrainDump />
                 <ToastViewport />
           </ToastProvider>
         </AuthProvider>

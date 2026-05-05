@@ -47,7 +47,6 @@ export default function ActivityPage() {
       const mondayStr = monday.toISOString().split('T')[0];
       const sundayStr = sunday.toISOString().split('T')[0];
 
-      // Fetch completed tasks this week
       const { data: tasksData } = await supabase
         .from('tasks')
         .select('id, is_done, created_at')
@@ -56,7 +55,6 @@ export default function ActivityPage() {
         .gte('created_at', mondayStr)
         .lte('created_at', sundayStr + 'T23:59:59');
 
-      // Fetch meals planned this week
       const { count: mealsCount } = await supabase
         .from('mealplanslots')
         .select('id', { count: 'exact', head: true })
@@ -64,7 +62,6 @@ export default function ActivityPage() {
         .gte('day', mondayStr)
         .lte('day', sundayStr);
 
-      // Fetch groceries checked this week
       const { count: groceriesCount } = await supabase
         .from('grocerylistitems')
         .select('id', { count: 'exact', head: true })
@@ -72,17 +69,15 @@ export default function ActivityPage() {
         .eq('source_week', mondayStr)
         .eq('is_checked', true);
 
-      // Calculate daily task distribution
       const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
       const dailyCounts: Record<string, number> = {};
-      
+
       (tasksData || []).forEach(task => {
         const taskDate = new Date(task.created_at);
         const dayName = dayNames[taskDate.getDay()];
         dailyCounts[dayName] = (dailyCounts[dayName] || 0) + 1;
       });
 
-      // Build daily stats array (Mon-Sun for display)
       const weekDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
       const dailyTasks: DayStats[] = weekDays.map(day => ({
         day,
@@ -90,7 +85,6 @@ export default function ActivityPage() {
         label: day,
       }));
 
-      // Find top day(s)
       const maxCount = Math.max(...dailyTasks.map(d => d.count));
       const topDays = dailyTasks.filter(d => d.count === maxCount && d.count > 0);
       const topDay = topDays.length > 0 && topDays.length <= 3
@@ -125,25 +119,25 @@ export default function ActivityPage() {
 
   return (
     <ProtectedRoute>
-      <div className="min-h-screen bg-gray-50 dark:bg-gray-950 pb-24 md:pb-8 transition-colors">
+      <div className="min-h-screen bg-background pb-24 md:pb-8 transition-colors">
         <main className="container mx-auto px-4 py-8 md:py-12 max-w-3xl">
           {/* Header */}
           <div className="mb-8">
-            <h1 className="text-3xl md:text-4xl font-bold text-gray-900 dark:text-white mb-3">
+            <h1 className="text-3xl md:text-4xl font-bold text-foreground mb-3">
               📊 Activity
             </h1>
             {loading ? (
-              <div className="h-5 bg-gray-800 rounded w-64 animate-pulse"></div>
+              <div className="h-5 bg-muted rounded w-64 animate-pulse" />
             ) : hasActivity && stats.topDay ? (
-              <p className="text-gray-600 dark:text-gray-400 text-lg">
+              <p className="text-muted-foreground text-lg">
                 You complete most tasks on {stats.topDay} 💪
               </p>
             ) : hasActivity ? (
-              <p className="text-gray-600 dark:text-gray-400 text-lg">
+              <p className="text-muted-foreground text-lg">
                 Keep up the great work this week!
               </p>
             ) : (
-              <p className="text-gray-600 dark:text-gray-400 text-lg">
+              <p className="text-muted-foreground text-lg">
                 Your weekly summary
               </p>
             )}
@@ -151,30 +145,28 @@ export default function ActivityPage() {
 
           {loading ? (
             <div className="space-y-6">
-              {/* Stats Cards Skeleton */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 {[1, 2, 3].map(i => (
                   <Card key={i} className="animate-pulse">
-                    <div className="h-12 bg-gray-800 rounded w-16 mb-2"></div>
-                    <div className="h-4 bg-gray-700 rounded w-24"></div>
+                    <div className="h-12 bg-muted rounded w-16 mb-2" />
+                    <div className="h-4 bg-soft rounded w-24" />
                   </Card>
                 ))}
               </div>
-              {/* Chart Skeleton */}
               <Card className="animate-pulse">
-                <div className="h-6 bg-gray-800 rounded w-48 mb-4"></div>
-                <div className="h-48 bg-gray-800/50 rounded"></div>
+                <div className="h-6 bg-muted rounded w-48 mb-4" />
+                <div className="h-48 bg-muted/50 rounded" />
               </Card>
             </div>
           ) : !hasActivity ? (
             <Card className="text-center py-16">
-              <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-green-900/30 to-teal-900/30 rounded-full mb-4">
+              <div className="inline-flex items-center justify-center w-16 h-16 bg-accent-soft/30 rounded-full mb-4">
                 <span className="text-3xl">✨</span>
               </div>
-              <h3 className="text-xl font-semibold text-white mb-2">
+              <h3 className="text-xl font-semibold text-foreground mb-2">
                 Nothing to show yet
               </h3>
-              <p className="text-gray-400 max-w-md mx-auto">
+              <p className="text-muted-foreground max-w-md mx-auto">
                 We'll show insights after you've used Laya for a bit. Add some tasks or plan your meals to get started!
               </p>
             </Card>
@@ -182,53 +174,50 @@ export default function ActivityPage() {
             <div className="space-y-6">
               {/* Stats Cards */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                {/* Tasks Completed */}
-                <Card className="hover:border-blue-700/50 transition-colors">
+                <Card>
                   <div className="flex items-center gap-3 mb-2">
-                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-900/50 to-blue-800/30 flex items-center justify-center text-xl">
+                    <div className="w-10 h-10 rounded-full bg-success/30 flex items-center justify-center text-xl">
                       ✓
                     </div>
                     <div>
-                      <p className="text-2xl font-bold text-white">
+                      <p className="text-2xl font-bold text-foreground">
                         {stats.tasksCompleted}
                       </p>
                     </div>
                   </div>
-                  <p className="text-sm text-gray-400">
+                  <p className="text-sm text-muted-foreground">
                     Tasks completed
                   </p>
                 </Card>
 
-                {/* Meals Planned */}
-                <Card className="hover:border-purple-700/50 transition-colors">
+                <Card>
                   <div className="flex items-center gap-3 mb-2">
-                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-purple-900/50 to-purple-800/30 flex items-center justify-center text-xl">
+                    <div className="w-10 h-10 rounded-full bg-info/30 flex items-center justify-center text-xl">
                       🍽️
                     </div>
                     <div>
-                      <p className="text-2xl font-bold text-white">
+                      <p className="text-2xl font-bold text-foreground">
                         {stats.mealsPlanned}
                       </p>
                     </div>
                   </div>
-                  <p className="text-sm text-gray-400">
+                  <p className="text-sm text-muted-foreground">
                     Meals planned
                   </p>
                 </Card>
 
-                {/* Groceries Checked */}
-                <Card className="hover:border-green-700/50 transition-colors">
+                <Card>
                   <div className="flex items-center gap-3 mb-2">
-                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-green-900/50 to-green-800/30 flex items-center justify-center text-xl">
+                    <div className="w-10 h-10 rounded-full bg-accent/20 flex items-center justify-center text-xl">
                       🛒
                     </div>
                     <div>
-                      <p className="text-2xl font-bold text-white">
+                      <p className="text-2xl font-bold text-foreground">
                         {stats.groceriesChecked}
                       </p>
                     </div>
                   </div>
-                  <p className="text-sm text-gray-400">
+                  <p className="text-sm text-muted-foreground">
                     Grocery items checked
                   </p>
                 </Card>
@@ -237,40 +226,38 @@ export default function ActivityPage() {
               {/* Daily Task Distribution Chart */}
               {stats.tasksCompleted > 0 && (
                 <Card>
-                  <h2 className="text-lg font-semibold text-white mb-4">
+                  <h2 className="text-lg font-semibold text-foreground mb-4">
                     Tasks completed by day
                   </h2>
-                  
+
                   <div className="space-y-3">
                     {stats.dailyTasks.map((day) => {
-                      const percentage = maxTaskCount > 0 
-                        ? (day.count / maxTaskCount) * 100 
+                      const percentage = maxTaskCount > 0
+                        ? (day.count / maxTaskCount) * 100
                         : 0;
                       const isTopDay = stats.topDay?.includes(day.day);
 
                       return (
                         <div key={day.day} className="flex items-center gap-3">
                           <span className={`text-sm font-medium w-10 ${
-                            isTopDay ? 'text-green-400' : 'text-gray-400'
+                            isTopDay ? 'text-success-foreground' : 'text-muted-foreground'
                           }`}>
                             {day.label}
                           </span>
-                          
-                          <div className="flex-1 h-8 bg-gray-800 rounded-lg overflow-hidden relative">
+
+                          <div className="flex-1 h-8 bg-muted rounded-lg overflow-hidden relative">
                             {day.count > 0 && (
                               <div
                                 className={`h-full rounded-lg transition-all duration-500 ${
-                                  isTopDay
-                                    ? 'bg-gradient-to-r from-green-600 to-teal-600'
-                                    : 'bg-gradient-to-r from-blue-600 to-blue-500'
+                                  isTopDay ? 'bg-primary' : 'bg-soft'
                                 }`}
                                 style={{ width: `${Math.max(percentage, 8)}%` }}
                               />
                             )}
                           </div>
-                          
+
                           <span className={`text-sm font-semibold w-8 text-right ${
-                            day.count > 0 ? 'text-white' : 'text-gray-600'
+                            day.count > 0 ? 'text-foreground' : 'text-muted-foreground'
                           }`}>
                             {day.count}
                           </span>
@@ -280,7 +267,7 @@ export default function ActivityPage() {
                   </div>
 
                   {stats.topDay && (
-                    <p className="mt-4 text-sm text-gray-400 text-center">
+                    <p className="mt-4 text-sm text-muted-foreground text-center">
                       Peak productivity on {stats.topDay} 🎯
                     </p>
                   )}
@@ -289,15 +276,15 @@ export default function ActivityPage() {
 
               {/* Insight Card */}
               {stats.tasksCompleted > 0 && (
-                <Card className="bg-gradient-to-br from-green-900/20 to-teal-900/20 border-green-800/30">
+                <Card className="bg-success border-success-border">
                   <div className="flex items-start gap-3">
                     <span className="text-2xl">💡</span>
                     <div>
-                      <h3 className="text-sm font-semibold text-white mb-1">
+                      <h3 className="text-sm font-semibold text-success-foreground mb-1">
                         Weekly Insight
                       </h3>
-                      <p className="text-sm text-gray-300">
-                        {stats.tasksCompleted >= 10 
+                      <p className="text-sm text-success-foreground/80">
+                        {stats.tasksCompleted >= 10
                           ? `Amazing! You completed ${stats.tasksCompleted} tasks this week. You're on fire! 🔥`
                           : stats.tasksCompleted >= 5
                           ? `Great week! ${stats.tasksCompleted} tasks done. Keep building momentum! 💪`
@@ -315,4 +302,3 @@ export default function ActivityPage() {
     </ProtectedRoute>
   );
 }
-

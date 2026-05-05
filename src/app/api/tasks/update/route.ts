@@ -23,6 +23,11 @@ export async function POST(request: NextRequest) {
       due_time,
       notes,
       is_done,
+      inferred_date,
+      inferred_time,
+      priority,
+      tags,
+      location,
     } = body as {
       taskId?: string;
       title?: string;
@@ -31,6 +36,11 @@ export async function POST(request: NextRequest) {
       due_time?: string | null;
       notes?: string | null;
       is_done?: boolean;
+      inferred_date?: boolean;
+      inferred_time?: boolean;
+      priority?: 'low' | 'medium' | 'high' | 'urgent' | null;
+      tags?: string[] | null;
+      location?: string | null;
     };
 
     if (!taskId || typeof taskId !== 'string') {
@@ -54,6 +64,11 @@ export async function POST(request: NextRequest) {
     if (due_time !== undefined) patch.due_time = due_time ?? null;
     if (notes !== undefined) patch.notes = notes ?? null;
     if (is_done !== undefined) patch.is_done = is_done;
+    if (inferred_date !== undefined) patch.inferred_date = inferred_date;
+    if (inferred_time !== undefined) patch.inferred_time = inferred_time;
+    if (priority !== undefined) patch.priority = priority ?? null;
+    if (tags !== undefined) patch.tags = tags ?? null;
+    if (location !== undefined) patch.location = location ?? null;
 
     if (Object.keys(patch).length === 0) {
       return NextResponse.json({ error: 'No fields to update' }, { status: 400 });

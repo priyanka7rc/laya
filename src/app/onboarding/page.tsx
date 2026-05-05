@@ -30,8 +30,8 @@ function OnboardingInner() {
   }, [router]);
 
   return (
-    <main className="min-h-screen flex items-center justify-center px-4">
-      <p>Routing onboarding...</p>
+    <main className="min-h-screen flex items-center justify-center px-4 bg-background text-foreground">
+      <p className="text-muted-foreground">Routing onboarding...</p>
     </main>
   );
 }

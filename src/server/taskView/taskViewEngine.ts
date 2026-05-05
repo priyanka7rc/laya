@@ -14,7 +14,15 @@ import {
   querySearchTasks,
   queryReminderWindowTasks,
 } from '@/server/taskView/taskViewQueries';
-import { supabase } from '@/lib/supabaseClient';
+import { createClient } from '@supabase/supabase-js';
+
+// Service-role client: bypasses RLS for server-side identity resolution.
+// Never expose this to the browser.
+const serviceSupabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  { auth: { persistSession: false, autoRefreshToken: false } }
+);
 
 const DEFAULT_LIMIT = 50;
 
@@ -32,7 +40,7 @@ async function resolveIdentity(identity: TaskViewIdentity): Promise<string | nul
   }
 
   if (identity.kind === 'authUserId') {
-    const { data, error } = await supabase
+    const { data, error } = await serviceSupabase
       .from('app_users')
       .select('id')
       .eq('auth_user_id', identity.authUserId)
@@ -47,7 +55,7 @@ async function resolveIdentity(identity: TaskViewIdentity): Promise<string | nul
 
   if (identity.kind === 'phone') {
     // First try direct phone mapping on app_users.phone_e164
-    const primary = await supabase
+    const primary = await serviceSupabase
       .from('app_users')
       .select('id')
       .eq('phone_e164', identity.phoneE164)
@@ -58,7 +66,7 @@ async function resolveIdentity(identity: TaskViewIdentity): Promise<string | nul
     }
 
     // Fallback: resolve via whatsapp_users.phone_number -> auth_user_id -> app_users.id
-    const wa = await supabase
+    const wa = await serviceSupabase
       .from('whatsapp_users')
       .select('auth_user_id')
       .eq('phone_number', identity.phoneE164)
@@ -71,7 +79,7 @@ async function resolveIdentity(identity: TaskViewIdentity): Promise<string | nul
       return null;
     }
 
-    const appFromAuth = await supabase
+    const appFromAuth = await serviceSupabase
       .from('app_users')
       .select('id')
       .eq('auth_user_id', wa.data.auth_user_id)

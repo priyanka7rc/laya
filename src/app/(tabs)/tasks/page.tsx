@@ -2,19 +2,20 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/components/AuthProvider";
+import { FirstRunDemo } from "@/components/FirstRunDemo";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import { Card, Button, Chip } from "@/components/ui";
 import { useToast } from "@/hooks/useToast";
-import { trackTaskToggle, trackTaskAdd } from "@/lib/analytics";
+import { trackTaskToggle } from "@/lib/analytics";
+import { getFirstRunDemoSeen, markFirstRunDemoSeen } from "@/lib/firstRunDemo";
 import { getCurrentAppUser } from "@/lib/users/linking";
 import { ConfirmInferenceBadge } from "@/components/ConfirmInferenceBadge";
 import { ImportTasksModal } from "@/components/ImportTasksModal";
+import { CreateTaskModal } from "@/components/CreateTaskModal";
+import { TaskDetailModal } from "@/components/TaskDetailModal";
 import TaskForm from "@/components/TaskForm";
-import { executeTaskView } from "@/server/taskView/taskViewEngine";
 import { TaskViewTask } from "@/lib/taskView/contracts";
 import { supabase } from "@/lib/supabaseClient";
-
-const TITLE_MAX_LENGTH = 120;
 
 type FilterChip = string;
 
@@ -29,45 +30,89 @@ function getTodayStr() {
   return new Date().toISOString().slice(0, 10);
 }
 
+/** Returns a combined date+time label such as "Today · 3:00 PM" or "in 3 days · 9:00 AM" */
+function formatDueLabel(due_date: string | null | undefined, due_time: string | null | undefined): string | null {
+  if (!due_date && !due_time) return null;
+
+  let dateLabel = "";
+  if (due_date) {
+    const [year, month, day] = due_date.split("-").map(Number);
+    const taskDate = new Date(year, month - 1, day);
+    const todayDate = new Date();
+    todayDate.setHours(0, 0, 0, 0);
+
+    const diffMs = taskDate.getTime() - todayDate.getTime();
+    const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24));
+
+    if (diffDays === 0) {
+      dateLabel = "Today";
+    } else if (diffDays === 1) {
+      dateLabel = "Tomorrow";
+    } else if (diffDays > 1 && diffDays < 7) {
+      dateLabel = `in ${diffDays} days`;
+    } else if (diffDays >= 7 && diffDays < 28) {
+      const weeks = Math.round(diffDays / 7);
+      dateLabel = `in ${weeks} ${weeks === 1 ? "week" : "weeks"}`;
+    } else if (diffDays >= 28) {
+      const months = Math.round(diffDays / 30);
+      dateLabel = `in ${months} ${months === 1 ? "month" : "months"}`;
+    } else {
+      // Past date — full readable format
+      dateLabel = taskDate.toLocaleDateString("en-US", {
+        month: "long",
+        day: "2-digit",
+        year: "numeric",
+      });
+    }
+  }
+
+  let timeLabel = "";
+  if (due_time) {
+    const [hours, minutes] = due_time.split(":");
+    const hour = parseInt(hours, 10);
+    const ampm = hour >= 12 ? "PM" : "AM";
+    const displayHour = hour % 12 || 12;
+    timeLabel = `${displayHour}:${minutes} ${ampm}`;
+  }
+
+  if (dateLabel && timeLabel) return `${dateLabel} · ${timeLabel}`;
+  if (dateLabel) return dateLabel;
+  return timeLabel || null;
+}
+
 export default function TasksPage() {
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const { toast } = useToast();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const [quickAddFocused, setQuickAddFocused] = useState(false);
-  const [quickTitle, setQuickTitle] = useState("");
-  const [quickDate, setQuickDate] = useState("");
-  const [quickTime, setQuickTime] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [addAnywayPending, setAddAnywayPending] = useState(false);
-
-  const titleInputRef = useRef<HTMLInputElement>(null);
   const [animatingTasks, setAnimatingTasks] = useState<Set<string>>(new Set());
 
   const [importModalOpen, setImportModalOpen] = useState(false);
+  const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [activeFilter, setActiveFilter] = useState<FilterChip>("All");
 
   const lastDeletedRef = useRef<{ taskIds: string[]; deletedAt: number } | null>(null);
-  const [editTask, setEditTask] = useState<Task | null>(null);
   const [overdueExpanded, setOverdueExpanded] = useState(false);
   const [todayExpanded, setTodayExpanded] = useState(true);
   const [upcomingExpanded, setUpcomingExpanded] = useState(true);
   const [doneExpanded, setDoneExpanded] = useState(true);
 
-  // Meatball menu / inline expansion / delete confirm
-  const [openMenuTaskId, setOpenMenuTaskId] = useState<string | null>(null);
+  // Per-section show-all toggle (initially capped at SECTION_LIMIT)
+  const SECTION_LIMIT = 10;
+  const [sectionShowAll, setSectionShowAll] = useState<Record<string, boolean>>({});
+
+  // Inline expansion / delete confirm
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
   const [reminderTaskId, setReminderTaskId] = useState<string | null>(null);
   const [deleteConfirmTask, setDeleteConfirmTask] = useState<Task | null>(null);
   const [rescheduleDate, setRescheduleDate] = useState("");
-
-  // Desktop right panel reminder state
-  const [panelRemindAt, setPanelRemindAt] = useState("");
-  const [panelReminderCustom, setPanelReminderCustom] = useState(false);
+  const [demoReady, setDemoReady] = useState(false);
+  const [showDemo, setShowDemo] = useState(false);
 
   const PAGE_LIMIT = 50;
   const todayStr = getTodayStr();
@@ -90,21 +135,29 @@ export default function TasksPage() {
       }
 
       const trimmed = (term ?? searchTerm).trim();
-      const result = await executeTaskView({
-        identity: { kind: "appUserId", appUserId: appUser.id },
-        view: trimmed ? "search" : "all",
-        filters: {
-          status: "active",
-          ...(trimmed ? { term: trimmed } : {}),
-        },
-        pagination: {
-          limit: PAGE_LIMIT,
-          cursor: cursor ?? undefined,
-        },
-      });
+      const { data: { session } } = await supabase.auth.getSession();
+      const taskHeaders: Record<string, string> = { "Content-Type": "application/json" };
+      if (session?.access_token) taskHeaders["Authorization"] = `Bearer ${session.access_token}`;
 
-      setNextCursor(result.pageInfo.nextCursor ?? null);
-      setHasMore(result.pageInfo.hasMore);
+      const res = await fetch("/api/tasks/view", {
+        method: "POST",
+        headers: taskHeaders,
+        body: JSON.stringify({
+          view: trimmed ? "search" : "all",
+          filters: {
+            status: "active",
+            ...(trimmed ? { term: trimmed } : {}),
+          },
+          pagination: {
+            limit: PAGE_LIMIT,
+            cursor: cursor ?? undefined,
+          },
+        }),
+      });
+      const result = res.ok ? await res.json() : { tasks: [], pageInfo: { hasMore: false, nextCursor: null } };
+
+      setNextCursor(result.pageInfo?.nextCursor ?? null);
+      setHasMore(result.pageInfo?.hasMore ?? false);
 
       setTasks((prev) => {
         const incoming = result.tasks as Task[];
@@ -132,127 +185,39 @@ export default function TasksPage() {
   }, [user, searchTerm]);
 
   useEffect(() => {
-    setPanelRemindAt("");
-    setPanelReminderCustom(false);
-  }, [editTask?.id]);
+    let mounted = true;
+    if (authLoading || !user) return;
+    void getFirstRunDemoSeen("tasks").then((seen) => {
+      if (!mounted) return;
+      setShowDemo(!seen);
+      setDemoReady(true);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [authLoading, user]);
 
-  const handleQuickAdd = async (
-    e?: React.FormEvent,
-    opts?: { allowDuplicate?: boolean }
-  ) => {
-    e?.preventDefault();
-    const allowDuplicate = opts?.allowDuplicate ?? false;
-    const trimmedInput = quickTitle.trim();
-
-    if (!trimmedInput) {
-      toast.error("Task title required");
-      return;
-    }
-    if (trimmedInput.length > TITLE_MAX_LENGTH) {
-      toast.error(`Task title must be ${TITLE_MAX_LENGTH} characters or less`);
-      return;
-    }
-    if (/[\r\n]/.test(quickTitle)) {
-      toast.error("Task title cannot contain line breaks");
-      return;
-    }
-
-    setAdding(true);
-    try {
-      let appUserId: string | null = null;
-      try {
-        const appUser = await getCurrentAppUser();
-        appUserId = appUser?.id ?? null;
-      } catch {
-        // non-blocking
-      }
-
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      const res = await fetch("/api/tasks/create", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(session?.access_token
-            ? { Authorization: `Bearer ${session.access_token}` }
-            : {}),
-        },
-        body: JSON.stringify({
-          text: trimmedInput,
-          due_date: quickDate || undefined,
-          due_time: quickTime || undefined,
-          allowDuplicate,
-          app_user_id: appUserId,
-        }),
-      });
-
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        toast.error(data.error || "Couldn't save changes");
-        return;
-      }
-
-      const { inserted, duplicates } = data;
-      if (duplicates?.length > 0 && (!inserted || inserted.length === 0)) {
-        toast.error("This task was just added.");
-        setAddAnywayPending(true);
-        return;
-      }
-
-      if (inserted?.length > 0) {
-        const newRow = inserted[0];
-        const proposed = data.proposed?.[0];
-        const newTask: Task = {
-          ...newRow,
-          notes: null,
-          is_done: false,
-          created_at: new Date().toISOString(),
-          inferred_date: proposed?.inferred_date ?? false,
-          inferred_time: proposed?.inferred_time ?? false,
-        };
-        const newTasks = [...tasks, newTask];
-        const sorted = newTasks.sort((a, b) => {
-          if (a.is_done !== b.is_done) return a.is_done ? 1 : -1;
-          if (a.due_date !== b.due_date) {
-            if (!a.due_date) return 1;
-            if (!b.due_date) return -1;
-            return a.due_date.localeCompare(b.due_date);
-          }
-          return (b.created_at ?? "").localeCompare(a.created_at ?? "");
-        });
-        setTasks(sorted);
-
-        setQuickTitle("");
-        setQuickDate("");
-        setQuickTime("");
-        setQuickAddFocused(false);
-        setAddAnywayPending(false);
-
-        toast.success("Task created");
-        if (proposed?.inferred_date || proposed?.inferred_time) {
-          const timeStr = (newRow.due_time || "").slice(0, 5);
-          toast({
-            title: `Scheduled for ${newRow.due_date} ${timeStr}. Tap Confirm to verify.`,
-            variant: "info",
-            duration: 5000,
-          });
-        }
-        trackTaskAdd();
-        titleInputRef.current?.focus();
-      }
-    } catch (err: unknown) {
-      console.error("Error adding task:", err);
-      toast.error("Couldn't save changes");
-    } finally {
-      setAdding(false);
-    }
+  const dismissDemo = () => {
+    setShowDemo(false);
+    void markFirstRunDemoSeen("tasks");
   };
 
-  const handleAddAnyway = () => {
-    setAddAnywayPending(false);
-    handleQuickAdd(undefined, { allowDuplicate: true });
-  };
+  // Deep-link support: /tasks#catch-up or /tasks#upcoming
+  useEffect(() => {
+    if (loading) return;
+    const hash = window.location.hash;
+    if (hash === "#catch-up") {
+      setOverdueExpanded(true);
+      setTimeout(() => {
+        document.getElementById("catch-up")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 100);
+    } else if (hash === "#upcoming") {
+      setUpcomingExpanded(true);
+      setTimeout(() => {
+        document.getElementById("upcoming")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 100);
+    }
+  }, [loading]);
 
   const handleUndoDelete = async () => {
     const last = lastDeletedRef.current;
@@ -331,11 +296,26 @@ export default function TasksPage() {
   const handleConfirmInference = async (taskId: string) => {
     const task = tasks.find((t) => t.id === taskId);
     if (!task || (!task.inferred_date && !task.inferred_time)) return;
+
     setTasks((prev) =>
       prev.map((t) =>
         t.id === taskId ? { ...t, inferred_date: false, inferred_time: false } : t
       )
     );
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      await fetch('/api/tasks/update', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({ taskId, inferred_date: false, inferred_time: false }),
+      });
+    } catch (err) {
+      console.error('[handleConfirmInference] failed to persist to DB', err);
+    }
   };
 
   const handleSetReminder = async (task: Task, offsetMs: number) => {
@@ -349,7 +329,6 @@ export default function TasksPage() {
     }
     setExpandedTaskId(null);
     setReminderTaskId(null);
-    setOpenMenuTaskId(null);
   };
 
   const handleReschedule = async () => {
@@ -375,18 +354,6 @@ export default function TasksPage() {
     setRescheduleDate("");
   };
 
-  const handlePanelSave = async () => {
-    if (panelRemindAt && editTask) {
-      const { error } = await supabase
-        .from("tasks")
-        .update({ remind_at: panelRemindAt })
-        .eq("id", editTask.id);
-      if (error) toast.error("Couldn't set reminder");
-    }
-    const form = document.getElementById("desktop-edit-form") as HTMLFormElement | null;
-    form?.requestSubmit();
-  };
-
   const toggleTask = async (task: Task) => {
     const newStatus = !task.is_done;
     const previousTasks = [...tasks];
@@ -407,7 +374,7 @@ export default function TasksPage() {
     try {
       const { error } = await supabase
         .from("tasks")
-        .update({ is_done: newStatus })
+        .update({ is_done: newStatus, status: newStatus ? 'completed' : 'active' })
         .eq("id", task.id);
       if (error) throw error;
       trackTaskToggle(task.id, newStatus);
@@ -419,26 +386,6 @@ export default function TasksPage() {
       setTasks(previousTasks);
       toast.error("Try again");
     }
-  };
-
-  const formatDate = (dateString: string | null) => {
-    if (!dateString) return null;
-    const date = new Date(dateString);
-    const today = new Date();
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    if (date.toDateString() === today.toDateString()) return "Today";
-    if (date.toDateString() === tomorrow.toDateString()) return "Tomorrow";
-    return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  };
-
-  const formatTime = (timeString: string | null) => {
-    if (!timeString) return null;
-    const [hours, minutes] = timeString.split(":");
-    const hour = parseInt(hours, 10);
-    const ampm = hour >= 12 ? "PM" : "AM";
-    const displayHour = hour % 12 || 12;
-    return `${displayHour}:${minutes} ${ampm}`;
   };
 
   // Client-side grouping (presentation only)
@@ -454,13 +401,11 @@ export default function TasksPage() {
   );
   const completed = tasks.filter((t) => t.is_done);
 
-  // Derive unique category values from fetched tasks for dynamic filter chips
   const categories = [
     ...new Set(tasks.map((t) => t.category).filter((c): c is string => Boolean(c))),
   ].sort();
   const filterChips: FilterChip[] = ["All", ...categories];
 
-  // Filter each group by active category chip ("All" shows everything)
   const filteredOverdue   = activeFilter === "All" ? overdue   : overdue.filter((t) => t.category === activeFilter);
   const filteredToday     = activeFilter === "All" ? todayTasks : todayTasks.filter((t) => t.category === activeFilter);
   const filteredUpcoming  = activeFilter === "All" ? upcoming   : upcoming.filter((t) => t.category === activeFilter);
@@ -485,9 +430,8 @@ export default function TasksPage() {
     isCompleted: boolean;
   }) => {
     const isExpanded = expandedTaskId === task.id;
-    const isMenuOpen = openMenuTaskId === task.id;
     const isReminderMode = reminderTaskId === task.id;
-    const isSelected = editTask?.id === task.id;
+    const dueLabel = formatDueLabel(task.due_date, task.due_time);
 
     return (
       <div className={`transition-all ${animatingTasks.has(task.id) ? "opacity-50 scale-[0.99]" : ""}`}>
@@ -495,8 +439,16 @@ export default function TasksPage() {
         <div
           className={`flex items-center gap-3 bg-card border border-border shadow-sm lg:shadow-none p-4 lg:py-2.5 lg:px-4 transition-colors lg:hover:bg-muted/30 lg:cursor-pointer ${
             isExpanded ? "rounded-t-xl border-b-0" : "rounded-xl"
-          } ${isSelected ? "lg:ring-2 lg:ring-primary/40 lg:bg-primary/5 lg:border-r-2 lg:border-r-primary/50" : ""}`}
-          onClick={() => setEditTask(task)}
+          }`}
+          onClick={() => {
+            if (isExpanded) {
+              setExpandedTaskId(null);
+              setReminderTaskId(null);
+            } else {
+              setExpandedTaskId(task.id);
+              setReminderTaskId(null);
+            }
+          }}
         >
           {/* Checkbox */}
           <button
@@ -519,21 +471,19 @@ export default function TasksPage() {
 
           {/* Content */}
           <div className="flex-1 min-w-0">
-            {/* Mobile: stacked. Desktop: single row with time inline */}
-            <div className="lg:flex lg:items-center lg:gap-2 min-w-0">
-              <p className={`font-medium text-sm leading-snug truncate ${isCompleted ? "line-through text-muted-foreground" : "text-foreground"}`}>
-                {task.title}
-              </p>
-              {task.due_time && (
-                <div className="flex items-center gap-1 mt-0.5 lg:mt-0 lg:shrink-0">
-                  <span className="hidden lg:inline text-muted-foreground/50 text-xs">·</span>
-                  <svg className="w-3 h-3 text-muted-foreground shrink-0 lg:hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <circle cx="12" cy="12" r="10" />
-                    <path d="M12 6v6l4 2" />
-                  </svg>
-                  <span className="text-xs text-muted-foreground">{formatTime(task.due_time)}</span>
-                </div>
-              )}
+            <p className={`font-medium text-sm leading-snug truncate ${isCompleted ? "line-through text-muted-foreground" : "text-foreground"}`}>
+              {task.title}
+            </p>
+            <div className="flex items-center gap-1 mt-0.5">
+              <svg className="w-3 h-3 text-muted-foreground/50 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+                <line x1="16" y1="2" x2="16" y2="6" />
+                <line x1="8" y1="2" x2="8" y2="6" />
+                <line x1="3" y1="10" x2="21" y2="10" />
+              </svg>
+              <span className={`text-xs ${dueLabel ? "text-muted-foreground" : "text-muted-foreground/40 italic"}`}>
+                {dueLabel ?? "No date"}
+              </span>
             </div>
             {(task.inferred_date || task.inferred_time) && (
               <div className="mt-1">
@@ -547,82 +497,47 @@ export default function TasksPage() {
             )}
           </div>
 
-          {/* Right side: category chip + meatball (mobile) / trash (desktop) */}
-          <div className="flex items-center gap-2 shrink-0">
+          {/* Right side: category chip + expand + trash — unified for mobile and desktop */}
+          <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
             {task.category && (
-              <Chip variant="category" className="text-xs py-0.5 px-2.5">
+              <Chip variant="category" className="text-xs py-0.5 px-2.5 hidden sm:inline-flex mr-1">
                 {task.category}
               </Chip>
             )}
 
-            {/* Mobile: meatball menu */}
-            <div className="relative lg:hidden">
-              <button
-                onClick={(e) => { e.stopPropagation(); setOpenMenuTaskId(isMenuOpen ? null : task.id); }}
-                className="p-1.5 rounded-lg text-muted-foreground hover:bg-muted transition-colors"
-                aria-label="Task options"
-              >
-                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                  <circle cx="5" cy="12" r="1.5" />
-                  <circle cx="12" cy="12" r="1.5" />
-                  <circle cx="19" cy="12" r="1.5" />
-                </svg>
-              </button>
-              {isMenuOpen && (
-                <div className="absolute right-0 top-full mt-1 z-30 bg-card border border-border rounded-xl shadow-lg py-1 w-44">
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setExpandedTaskId(task.id); setReminderTaskId(task.id); setOpenMenuTaskId(null); }}
-                    className="w-full text-left px-4 py-2.5 text-sm text-foreground hover:bg-muted transition-colors flex items-center gap-2"
-                  >
-                    <svg className="w-4 h-4 text-muted-foreground shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <circle cx="12" cy="12" r="10" /><path d="M12 6v6l4 2" />
-                    </svg>
-                    Set Reminder
-                  </button>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setExpandedTaskId(task.id); setReminderTaskId(null); setOpenMenuTaskId(null); }}
-                    className="w-full text-left px-4 py-2.5 text-sm text-foreground hover:bg-muted transition-colors flex items-center gap-2"
-                  >
-                    <svg className="w-4 h-4 text-muted-foreground shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                    </svg>
-                    Edit
-                  </button>
-                  <div className="my-1 h-px bg-border/60" />
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setDeleteConfirmTask(task); setOpenMenuTaskId(null); }}
-                    className="w-full text-left px-4 py-2.5 text-sm text-destructive hover:bg-destructive/5 transition-colors flex items-center gap-2"
-                  >
-                    <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                    </svg>
-                    Delete
-                  </button>
-                </div>
-              )}
-            </div>
+            {/* Expand icon — opens Task Detail modal */}
+            <button
+              onClick={(e) => { e.stopPropagation(); setDetailTaskId(task.id); }}
+              className="flex items-center justify-center p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+              aria-label="Open task details"
+            >
+              {/* Two-arrow expand icon */}
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 3h6m0 0v6m0-6l-7 7M9 21H3m0 0v-6m0 6l7-7" />
+              </svg>
+            </button>
 
-            {/* Desktop: trash icon only */}
+            {/* Trash icon — delete */}
             <button
               onClick={(e) => { e.stopPropagation(); setDeleteConfirmTask(task); }}
-              className="hidden lg:flex items-center justify-center p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/5 transition-colors"
+              className="flex items-center justify-center p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/5 transition-colors"
               aria-label="Delete task"
             >
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
               </svg>
             </button>
           </div>
         </div>
 
-        {/* Inline expansion panel (mobile only) */}
+        {/* Inline expansion panel (mobile + desktop) */}
         {isExpanded && (
-          <div className="lg:hidden border border-t-0 border-border rounded-b-xl bg-card overflow-hidden">
+          <div className="border border-t-0 border-border rounded-b-xl bg-card overflow-hidden">
             {isReminderMode ? (
               <div className="p-4">
                 <p className="text-sm font-medium text-foreground mb-1">Set a reminder</p>
                 <p className="text-xs text-muted-foreground mb-3">
-                  Remind me before{task.due_time ? ` ${formatTime(task.due_time)}` : " the task"}
+                  Remind me before{task.due_time ? ` ${formatDueLabel(null, task.due_time)}` : " the task"}
                 </p>
                 <div className="flex flex-wrap gap-2 mb-4">
                   {REMINDER_OPTIONS.map((opt) => (
@@ -684,21 +599,21 @@ export default function TasksPage() {
     count,
     children,
     variant = "default",
-    useCardPerTask = false,
     collapsible = false,
     collapsed = false,
     onToggle,
+    id,
   }: {
     title: string;
     count: number;
     children: React.ReactNode;
     variant?: "default" | "overdue";
-    useCardPerTask?: boolean;
     collapsible?: boolean;
     collapsed?: boolean;
     onToggle?: () => void;
+    id?: string;
   }) => (
-    <div className="space-y-3">
+    <div className="space-y-3" id={id}>
       <div
         className={`flex items-center gap-2 px-1 ${collapsible ? "cursor-pointer select-none" : ""}`}
         onClick={collapsible ? onToggle : undefined}
@@ -739,8 +654,8 @@ export default function TasksPage() {
   return (
     <ProtectedRoute>
       <div className="min-h-screen bg-background transition-colors">
-          <main className="w-full max-w-md lg:max-w-7xl mx-auto px-4 lg:px-8 py-6 lg:py-10">
-          {/* Header row: title left, search + New Task right on desktop; title only on mobile */}
+        <main className="w-full max-w-2xl lg:max-w-3xl mx-auto px-4 lg:px-8 py-6 lg:py-10">
+          {/* Header row */}
           <div className="mb-4 lg:mb-6 flex items-center justify-between gap-4">
             <div>
               <h1 className="text-3xl lg:text-4xl font-semibold text-foreground tracking-tight">
@@ -777,7 +692,7 @@ export default function TasksPage() {
               </div>
               <Button
                 type="button"
-                onClick={() => titleInputRef.current?.focus()}
+                onClick={() => setCreateModalOpen(true)}
                 className="shrink-0"
                 title="Add a new task"
               >
@@ -822,118 +737,28 @@ export default function TasksPage() {
             toast={toast}
           />
 
-          {/* Quick Add */}
-          <Card
-            className="mb-6 p-1 overflow-hidden shadow-sm cursor-text"
-            onClick={() => titleInputRef.current?.focus()}
-          >
-            <form onSubmit={handleQuickAdd} className="flex items-center gap-3 px-4 py-1.5" onClick={(e) => e.stopPropagation()}>
-              <div className="w-10 flex justify-center text-primary shrink-0">
-                <svg
-                  className="w-5 h-5"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={2}
-                >
-                  <path d="M12 5v14" />
-                  <path d="M5 12h14" />
-                </svg>
-              </div>
-              <input
-                ref={titleInputRef}
-                type="text"
-                value={quickTitle}
-                onChange={(e) => {
-                  setQuickTitle(e.target.value);
-                  setAddAnywayPending(false);
-                }}
-                onFocus={() => setQuickAddFocused(true)}
-                placeholder="Type a task and press Enter..."
-                maxLength={TITLE_MAX_LENGTH}
-              className="flex-1 bg-transparent border-none focus:ring-0 focus:outline-none text-foreground placeholder-muted-foreground text-base py-0"
-            />
-          </form>
-            {quickAddFocused && (
-              <div className="px-4 pb-4 pt-0 space-y-3 animate-slide-down border-t border-border">
-                <div className="grid grid-cols-2 gap-3 pt-3">
-                  <div>
-                    <label className="block text-xs text-muted-foreground mb-1.5">
-                      Due Date
-                    </label>
-                    <input
-                      type="date"
-                      value={quickDate}
-                      onChange={(e) => {
-                        setQuickDate(e.target.value);
-                        setAddAnywayPending(false);
-                      }}
-                      className={inputBase}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-muted-foreground mb-1.5">
-                      Due Time
-                    </label>
-                    <input
-                      type="time"
-                      value={quickTime}
-                      onChange={(e) => {
-                        setQuickTime(e.target.value);
-                        setAddAnywayPending(false);
-                      }}
-                      className={inputBase}
-                    />
-                  </div>
-                </div>
-                <div className="flex flex-col gap-2">
-                  <div className="flex gap-2">
-                    <Button
-                      type="submit"
-                      loading={adding}
-                      disabled={!quickTitle.trim() || adding}
-                      className="flex-1"
-                    >
-                      Add Task
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      onClick={() => {
-                        setQuickAddFocused(false);
-                        setQuickTitle("");
-                        setQuickDate("");
-                        setQuickTime("");
-                        setAddAnywayPending(false);
-                      }}
-                    >
-                      Cancel
-                    </Button>
-                  </div>
-                  {addAnywayPending && (
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      onClick={handleAddAnyway}
-                      disabled={adding}
-                      className="w-full"
-                    >
-                      Add anyway
-                    </Button>
-                  )}
-                </div>
-              </div>
-            )}
-          </Card>
+          <CreateTaskModal
+            isOpen={createModalOpen}
+            onClose={() => setCreateModalOpen(false)}
+            onSuccess={() => { setCreateModalOpen(false); fetchTasks(); }}
+            toast={toast}
+          />
 
-          {/* Filter chips (presentation only) */}
+          <TaskDetailModal
+            taskId={detailTaskId}
+            onClose={() => setDetailTaskId(null)}
+            onSuccess={() => { setDetailTaskId(null); fetchTasks(); }}
+            toast={toast}
+          />
+
+          {/* Filter chips */}
           <div className="flex gap-2 overflow-x-auto pb-2 mb-6 -mx-1 px-1 scrollbar-hide">
             {filterChips.map((chip) => (
               <Chip
                 key={chip}
                 variant="filter"
                 selected={activeFilter === chip}
-                onClick={() => setActiveFilter(chip)}
+                onClick={() => { setActiveFilter(chip); setSectionShowAll({}); }}
               >
                 {chip}
               </Chip>
@@ -975,204 +800,126 @@ export default function TasksPage() {
               )}
             </Card>
           ) : (
-            <div className="flex flex-col lg:flex-row gap-4 lg:gap-5 items-start">
-              {/* Task list — order: Today → Upcoming → Overdue (collapsed) → Done */}
-              <div className="flex-1 space-y-6 min-w-0">
-                {filteredToday.length > 0 && (
-                  <TaskGroup
-                    title="TODAY"
-                    count={filteredToday.length}
-                    collapsible
-                    collapsed={!todayExpanded}
-                    onToggle={() => setTodayExpanded((v) => !v)}
-                  >
-                    {filteredToday.map((task) => (
-                      <TaskRow key={task.id} task={task} isCompleted={false} />
-                    ))}
-                  </TaskGroup>
-                )}
-                {filteredUpcoming.length > 0 && (
-                  <TaskGroup
-                    title="UPCOMING"
-                    count={filteredUpcoming.length}
-                    collapsible
-                    collapsed={!upcomingExpanded}
-                    onToggle={() => setUpcomingExpanded((v) => !v)}
-                  >
-                    {filteredUpcoming.map((task) => (
-                      <TaskRow key={task.id} task={task} isCompleted={false} />
-                    ))}
-                  </TaskGroup>
-                )}
-                {filteredOverdue.length > 0 && (
-                  <TaskGroup
-                    title="OVERDUE"
-                    count={filteredOverdue.length}
-                    variant="overdue"
-                    collapsible
-                    collapsed={!overdueExpanded}
-                    onToggle={() => setOverdueExpanded((v) => !v)}
-                  >
-                    {filteredOverdue.map((task) => (
-                      <TaskRow key={task.id} task={task} isCompleted={false} />
-                    ))}
-                  </TaskGroup>
-                )}
-                {filteredCompleted.length > 0 && (
-                  <TaskGroup
-                    title="DONE"
-                    count={filteredCompleted.length}
-                    collapsible
-                    collapsed={!doneExpanded}
-                    onToggle={() => setDoneExpanded((v) => !v)}
-                  >
-                    {filteredCompleted.map((task) => (
-                      <TaskRow key={task.id} task={task} isCompleted />
-                    ))}
-                  </TaskGroup>
-                )}
-              </div>
-
-              {/* Click-outside overlay to close mobile meatball menus */}
-              {openMenuTaskId && (
-                <div
-                  className="fixed inset-0 z-20"
-                  onClick={() => setOpenMenuTaskId(null)}
-                  aria-hidden
-                />
-              )}
-
-              {/* Desktop right-side detail / edit panel */}
-              <div className="hidden lg:block w-80 shrink-0 relative">
-                {/* Left-pointing triangle connector — visible when a task is selected */}
-                {editTask && (
-                  <div
-                    className="absolute -left-3 top-7 w-0 h-0 pointer-events-none z-10"
-                    style={{
-                      borderTop: "7px solid transparent",
-                      borderBottom: "7px solid transparent",
-                      borderRight: "7px solid hsl(var(--border))",
-                    }}
-                  />
-                )}
-                <Card className="sticky top-[88px] overflow-hidden">
-                  {!editTask ? (
-                    /* Empty state */
-                    <div className="flex flex-col items-center justify-center py-14 px-6 text-center">
-                      <div className="w-11 h-11 rounded-full bg-muted flex items-center justify-center mb-3">
-                        <svg className="w-5 h-5 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                        </svg>
-                      </div>
-                      <p className="text-sm text-muted-foreground">Select a task to edit</p>
-                    </div>
-                  ) : (
-                    <>
-                      {/* Scrollable form + reminder area */}
-                      <div className="overflow-y-auto max-h-[calc(100vh-300px)]">
-                        <TaskForm
-                          key={editTask.id}
-                          editTask={editTask}
-                          panelMode
-                          onSuccess={() => {
-                            setEditTask(null);
-                            setPanelRemindAt("");
-                            setPanelReminderCustom(false);
-                            fetchTasks();
-                          }}
-                          onError={(msg) => toast.error(msg)}
-                        />
-
-                        {/* Reminder section */}
-                        <div className="px-4 pb-5 space-y-2.5">
-                          <div className="flex items-center gap-1.5 text-xs text-muted-foreground font-medium uppercase tracking-wide">
-                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M15 17H20L18.595 13.122A6 6 0 0 0 6 9v4.5L4.5 17H9.5M15 17H9.5M15 17a3 3 0 11-5.477 0" />
-                            </svg>
-                            Reminder
-                          </div>
-                          <div className="flex flex-wrap gap-1.5">
-                            {REMINDER_OPTIONS.map((opt) => {
-                              const remindAtForOpt = editTask.dueAt
-                                ? new Date(new Date(editTask.dueAt).getTime() - opt.ms).toISOString()
-                                : null;
-                              const isChipSelected = remindAtForOpt !== null && panelRemindAt === remindAtForOpt;
-                              return (
-                                <button
-                                  key={opt.label}
-                                  onClick={() => { setPanelRemindAt(remindAtForOpt ?? ""); setPanelReminderCustom(false); }}
-                                  disabled={!remindAtForOpt}
-                                  className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${
-                                    isChipSelected
-                                      ? "bg-primary text-primary-foreground border-primary"
-                                      : "border-border text-foreground hover:bg-primary/10 hover:border-primary hover:text-primary"
-                                  } disabled:opacity-40 disabled:cursor-not-allowed`}
-                                >
-                                  {opt.label} before
-                                </button>
-                              );
-                            })}
-                            <button
-                              onClick={() => { setPanelReminderCustom(true); if (!panelReminderCustom) setPanelRemindAt(""); }}
-                              className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${
-                                panelReminderCustom
-                                  ? "bg-primary text-primary-foreground border-primary"
-                                  : "border-border text-foreground hover:bg-primary/10 hover:border-primary hover:text-primary"
-                              }`}
-                            >
-                              Other
-                            </button>
-                          </div>
-                          {panelReminderCustom && (
-                            <input
-                              type="datetime-local"
-                              value={panelRemindAt ? new Date(panelRemindAt).toISOString().slice(0, 16) : ""}
-                              onChange={(e) =>
-                                setPanelRemindAt(e.target.value ? new Date(e.target.value).toISOString() : "")
-                              }
-                              className="w-full border border-border rounded-lg px-3 py-1.5 text-sm bg-card text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20"
-                            />
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Footer: equal-width Save + Cancel */}
-                      <div className="flex gap-2 p-4 border-t border-border bg-muted/20">
-                        <button
-                          type="button"
-                          onClick={handlePanelSave}
-                          className="flex-1 h-9 bg-primary text-primary-foreground text-sm font-medium rounded-xl hover:bg-primary/90 transition-colors"
-                        >
-                          Save Changes
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => { setEditTask(null); setPanelRemindAt(""); setPanelReminderCustom(false); }}
-                          className="flex-1 h-9 border border-border text-sm text-foreground rounded-xl hover:bg-muted transition-colors"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </>
+            <div className="space-y-6">
+              {filteredToday.length > 0 && (
+                <TaskGroup
+                  title="TODAY"
+                  count={filteredToday.length}
+                  collapsible
+                  collapsed={!todayExpanded}
+                  onToggle={() => setTodayExpanded((v) => !v)}
+                >
+                  {(sectionShowAll["today"] ? filteredToday : filteredToday.slice(0, SECTION_LIMIT)).map((task) => (
+                    <TaskRow key={task.id} task={task} isCompleted={false} />
+                  ))}
+                  {!sectionShowAll["today"] && filteredToday.length > SECTION_LIMIT && (
+                    <button
+                      onClick={() => setSectionShowAll((s) => ({ ...s, today: true }))}
+                      className="w-full text-center text-xs text-muted-foreground hover:text-foreground py-2 transition-colors"
+                    >
+                      Show {filteredToday.length - SECTION_LIMIT} more
+                    </button>
                   )}
-                </Card>
-              </div>
-            </div>
-          )}
-
-
-          {!loading && hasMore && (
-            <div className="mt-6 flex justify-center">
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() =>
-                  fetchTasks(searchTerm, { cursor: nextCursor, append: true })
-                }
-                disabled={!nextCursor}
-              >
-                Load more
-              </Button>
+                  {sectionShowAll["today"] && hasMore && (
+                    <button
+                      onClick={() => fetchTasks(searchTerm, { cursor: nextCursor, append: true })}
+                      className="w-full text-center text-xs text-muted-foreground hover:text-foreground py-2 transition-colors"
+                    >
+                      Load more
+                    </button>
+                  )}
+                </TaskGroup>
+              )}
+              {filteredUpcoming.length > 0 && (
+                <TaskGroup
+                  id="upcoming"
+                  title="UPCOMING"
+                  count={filteredUpcoming.length}
+                  collapsible
+                  collapsed={!upcomingExpanded}
+                  onToggle={() => setUpcomingExpanded((v) => !v)}
+                >
+                  {(sectionShowAll["upcoming"] ? filteredUpcoming : filteredUpcoming.slice(0, SECTION_LIMIT)).map((task) => (
+                    <TaskRow key={task.id} task={task} isCompleted={false} />
+                  ))}
+                  {!sectionShowAll["upcoming"] && filteredUpcoming.length > SECTION_LIMIT && (
+                    <button
+                      onClick={() => setSectionShowAll((s) => ({ ...s, upcoming: true }))}
+                      className="w-full text-center text-xs text-muted-foreground hover:text-foreground py-2 transition-colors"
+                    >
+                      Show {filteredUpcoming.length - SECTION_LIMIT} more
+                    </button>
+                  )}
+                  {sectionShowAll["upcoming"] && hasMore && (
+                    <button
+                      onClick={() => fetchTasks(searchTerm, { cursor: nextCursor, append: true })}
+                      className="w-full text-center text-xs text-muted-foreground hover:text-foreground py-2 transition-colors"
+                    >
+                      Load more
+                    </button>
+                  )}
+                </TaskGroup>
+              )}
+              {filteredOverdue.length > 0 && (
+                <TaskGroup
+                  id="catch-up"
+                  title="OVERDUE"
+                  count={filteredOverdue.length}
+                  variant="overdue"
+                  collapsible
+                  collapsed={!overdueExpanded}
+                  onToggle={() => setOverdueExpanded((v) => !v)}
+                >
+                  {(sectionShowAll["overdue"] ? filteredOverdue : filteredOverdue.slice(0, SECTION_LIMIT)).map((task) => (
+                    <TaskRow key={task.id} task={task} isCompleted={false} />
+                  ))}
+                  {!sectionShowAll["overdue"] && filteredOverdue.length > SECTION_LIMIT && (
+                    <button
+                      onClick={() => setSectionShowAll((s) => ({ ...s, overdue: true }))}
+                      className="w-full text-center text-xs text-muted-foreground hover:text-foreground py-2 transition-colors"
+                    >
+                      Show {filteredOverdue.length - SECTION_LIMIT} more
+                    </button>
+                  )}
+                  {sectionShowAll["overdue"] && hasMore && (
+                    <button
+                      onClick={() => fetchTasks(searchTerm, { cursor: nextCursor, append: true })}
+                      className="w-full text-center text-xs text-muted-foreground hover:text-foreground py-2 transition-colors"
+                    >
+                      Load more
+                    </button>
+                  )}
+                </TaskGroup>
+              )}
+              {filteredCompleted.length > 0 && (
+                <TaskGroup
+                  title="DONE"
+                  count={filteredCompleted.length}
+                  collapsible
+                  collapsed={!doneExpanded}
+                  onToggle={() => setDoneExpanded((v) => !v)}
+                >
+                  {(sectionShowAll["done"] ? filteredCompleted : filteredCompleted.slice(0, SECTION_LIMIT)).map((task) => (
+                    <TaskRow key={task.id} task={task} isCompleted />
+                  ))}
+                  {!sectionShowAll["done"] && filteredCompleted.length > SECTION_LIMIT && (
+                    <button
+                      onClick={() => setSectionShowAll((s) => ({ ...s, done: true }))}
+                      className="w-full text-center text-xs text-muted-foreground hover:text-foreground py-2 transition-colors"
+                    >
+                      Show {filteredCompleted.length - SECTION_LIMIT} more
+                    </button>
+                  )}
+                  {sectionShowAll["done"] && hasMore && (
+                    <button
+                      onClick={() => fetchTasks(searchTerm, { cursor: nextCursor, append: true })}
+                      className="w-full text-center text-xs text-muted-foreground hover:text-foreground py-2 transition-colors"
+                    >
+                      Load more
+                    </button>
+                  )}
+                </TaskGroup>
+              )}
             </div>
           )}
         </main>
@@ -1181,10 +928,10 @@ export default function TasksPage() {
       {/* Delete confirmation modal */}
       {deleteConfirmTask && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          className="fixed inset-0 z-[200] flex items-center justify-center p-4"
           onClick={() => { setDeleteConfirmTask(null); setRescheduleDate(""); }}
         >
-          <div className="absolute inset-0 bg-black/40" aria-hidden />
+          <div className="absolute inset-0 bg-overlay" aria-hidden />
           <div
             className="relative w-full max-w-sm bg-card rounded-2xl shadow-2xl border border-border p-6"
             onClick={(e) => e.stopPropagation()}
@@ -1194,7 +941,6 @@ export default function TasksPage() {
               &ldquo;{deleteConfirmTask.title}&rdquo;
             </p>
 
-            {/* Reschedule date picker (revealed on reschedule click) */}
             {rescheduleDate !== undefined && (
               <div className="mb-4">
                 <label className="block text-xs text-muted-foreground mb-1.5">New due date</label>
@@ -1244,6 +990,13 @@ export default function TasksPage() {
           </div>
         </div>
       )}
+
+      <FirstRunDemo
+        page="tasks"
+        isOpen={demoReady && showDemo}
+        onComplete={dismissDemo}
+        onSkip={dismissDemo}
+      />
     </ProtectedRoute>
   );
 }

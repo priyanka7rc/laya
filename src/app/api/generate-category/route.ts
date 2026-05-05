@@ -10,7 +10,7 @@ export async function POST(request: NextRequest) {
     const { title, notes } = await request.json();
 
     const completion = await openai.chat.completions.create({
-      model: "gpt-3.5-turbo",
+      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
       messages: [{
         role: "user",
         content: `Suggest a short category name (1-2 words) for this task:

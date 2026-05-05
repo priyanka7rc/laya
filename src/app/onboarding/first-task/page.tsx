@@ -80,32 +80,32 @@ function FirstTaskInner() {
 
   if (loading) {
     return (
-      <main className="min-h-screen flex items-center justify-center">
-        <p>Loading…</p>
+      <main className="min-h-screen flex items-center justify-center bg-background">
+        <p className="text-muted-foreground">Loading…</p>
       </main>
     );
   }
 
   return (
-    <main className="min-h-screen flex flex-col px-4 py-8">
+    <main className="min-h-screen flex flex-col px-4 py-8 bg-background">
       <div className="w-full max-w-md mx-auto space-y-6">
-        <h1 className="text-2xl font-semibold">One thing for today</h1>
-        <p className="text-sm text-gray-600">
-          Add just one thing that’s on your mind. You can always add more later.
+        <h1 className="text-2xl font-semibold text-foreground">One thing for today</h1>
+        <p className="text-sm text-muted-foreground">
+          Add just one thing that's on your mind. You can always add more later.
         </p>
 
         <form onSubmit={handleSave} className="space-y-4">
           <textarea
-            className="w-full border rounded px-3 py-2 text-base min-h-[80px]"
+            className="w-full border border-border rounded px-3 py-2 text-base min-h-[80px] bg-elevated text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
             placeholder="Send kid in costume tomorrow, pay electricity bill, call Amma…"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
           />
-          {error && <p className="text-sm text-red-500">{error}</p>}
+          {error && <p className="text-sm text-danger-foreground">{error}</p>}
           <button
             type="submit"
             disabled={saving}
-            className="w-full bg-black text-white py-2 rounded disabled:opacity-60"
+            className="w-full bg-primary text-primary-foreground py-2 rounded disabled:opacity-60 hover:bg-primary/90 transition-colors"
           >
             {saving ? "Saving..." : "Save task"}
           </button>
@@ -115,7 +115,7 @@ function FirstTaskInner() {
           type="button"
           onClick={handleSkip}
           disabled={saving}
-          className="w-full border border-gray-300 py-2 rounded text-sm disabled:opacity-60"
+          className="w-full border border-border py-2 rounded text-sm text-foreground disabled:opacity-60 hover:bg-muted transition-colors"
         >
           Skip for now
         </button>
@@ -123,4 +123,3 @@ function FirstTaskInner() {
     </main>
   );
 }
-

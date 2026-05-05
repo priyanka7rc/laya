@@ -38,6 +38,11 @@ export interface UpdateTaskFieldsParams {
     remind_at: string | null;
     notes: string | null;
     is_done: boolean;
+    inferred_date: boolean;
+    inferred_time: boolean;
+    priority: 'low' | 'medium' | 'high' | 'urgent' | null;
+    tags: string[] | null;
+    location: string | null;
   }>;
   timezone: string;
   source: 'web' | 'whatsapp';
@@ -64,7 +69,15 @@ export async function updateTaskFields(
   if (patch.title !== undefined) updatePayload.title = patch.title;
   if (patch.category !== undefined) updatePayload.category = patch.category;
   if (patch.notes !== undefined) updatePayload.notes = patch.notes;
-  if (patch.is_done !== undefined) updatePayload.is_done = patch.is_done;
+  if (patch.inferred_date !== undefined) updatePayload.inferred_date = patch.inferred_date;
+  if (patch.inferred_time !== undefined) updatePayload.inferred_time = patch.inferred_time;
+  if (patch.priority !== undefined) updatePayload.priority = patch.priority;
+  if (patch.tags !== undefined) updatePayload.tags = patch.tags;
+  if (patch.location !== undefined) updatePayload.location = patch.location;
+  if (patch.is_done !== undefined) {
+    updatePayload.is_done = patch.is_done;
+    updatePayload.status = patch.is_done ? 'completed' : 'active';
+  }
 
   // Schedule recompute
   if (patch.due_at !== undefined) {

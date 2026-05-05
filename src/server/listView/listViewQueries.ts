@@ -68,7 +68,7 @@ export async function queryAllLists(
 ): Promise<ListViewResult> {
   let query = supabase
     .from('lists')
-    .select('*')
+    .select('id, name, app_user_id, source, created_at, updated_at, is_starred')
     .eq('app_user_id', appUserId)
     .is('deleted_at', null)
     // Deterministic ordering for pagination: updated_at DESC, id DESC.

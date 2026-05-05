@@ -4,6 +4,8 @@ import { useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { validateTaskQuickAdd } from '@/lib/validation';
 import { toHHMM } from '@/lib/taskRulesParser';
+import { DatePickerDropdown } from '@/components/DatePickerDropdown';
+import { TimePickerDropdown } from '@/components/TimePickerDropdown';
 
 interface TaskFormProps {
   onSuccess?: () => void;
@@ -159,18 +161,21 @@ export default function TaskForm({ onSuccess, onError, editTask, panelMode }: Ta
       <form
         id="desktop-edit-form"
         onSubmit={handleSubmit}
-        className="p-4 space-y-4"
+        className="p-4 space-y-3"
       >
-        {/* Title — transparent textarea */}
+        {/* Title — visibly editable input */}
         <div>
+          <label className="block text-xs font-medium text-muted-foreground mb-1.5">
+            Title
+          </label>
           <textarea
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="Task title..."
             maxLength={120}
             rows={2}
-            className={`w-full bg-transparent border-none focus:outline-none focus:ring-0 text-lg text-foreground placeholder-muted-foreground resize-none min-h-[60px] ${
-              validationErrors.title ? 'placeholder-destructive' : ''
+            className={`w-full px-3 py-2.5 rounded-xl border bg-background text-sm text-foreground placeholder-muted-foreground resize-none focus:outline-none focus:ring-2 focus:ring-ring transition-colors ${
+              validationErrors.title ? 'border-destructive' : 'border-border'
             }`}
           />
           {validationErrors.title && (
@@ -178,67 +183,49 @@ export default function TaskForm({ onSuccess, onError, editTask, panelMode }: Ta
           )}
         </div>
 
-        {/* Due Date — property row */}
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-muted/50 flex items-center justify-center text-muted-foreground flex-shrink-0">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
-              <line x1="16" y1="2" x2="16" y2="6" />
-              <line x1="8" y1="2" x2="8" y2="6" />
-              <line x1="3" y1="10" x2="21" y2="10" />
-            </svg>
-          </div>
-          <input
-            type="date"
+        {/* Due Date + Time — side by side */}
+        <div className="grid grid-cols-2 gap-2">
+          <DatePickerDropdown
+            label="Due date"
             value={dueDate}
-            onChange={(e) => setDueDate(e.target.value)}
-            className="flex-1 border border-border rounded-lg px-3 py-1.5 text-sm bg-card text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+            onChange={setDueDate}
           />
-        </div>
-
-        {/* Due Time — property row */}
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-muted/50 flex items-center justify-center text-muted-foreground flex-shrink-0">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <circle cx="12" cy="12" r="10" />
-              <polyline points="12 6 12 12 16 14" />
-            </svg>
-          </div>
-          <input
-            type="time"
+          <TimePickerDropdown
+            label="Due time"
             value={dueTime}
-            onChange={(e) => setDueTime(e.target.value)}
-            className="flex-1 border border-border rounded-lg px-3 py-1.5 text-sm bg-card text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+            onChange={setDueTime}
           />
         </div>
 
-        {/* Category — property row */}
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-muted/50 flex items-center justify-center text-muted-foreground flex-shrink-0">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z" />
-              <line x1="7" y1="7" x2="7.01" y2="7" />
-            </svg>
-          </div>
+        {/* Category */}
+        <div>
+          <label className="block text-xs font-medium text-muted-foreground mb-1.5">
+            Category
+          </label>
           <input
             type="text"
             value={category}
             onChange={(e) => setCategory(e.target.value)}
-            placeholder="Category"
+            placeholder="e.g. Work, Personal"
             maxLength={50}
-            className="flex-1 border border-border rounded-lg px-3 py-1.5 text-sm bg-card text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+            className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring transition-colors"
           />
         </div>
 
         {/* Notes */}
-        <textarea
-          value={notes}
-          onChange={(e) => setNotes(e.target.value)}
-          rows={4}
-          placeholder="Add notes..."
-          maxLength={500}
-          className="w-full bg-muted/30 rounded-xl p-3 text-sm text-foreground placeholder-muted-foreground resize-none min-h-[120px] border-none focus:outline-none focus:ring-0"
-        />
+        <div>
+          <label className="block text-xs font-medium text-muted-foreground mb-1.5">
+            Notes
+          </label>
+          <textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            rows={3}
+            placeholder="Add notes..."
+            maxLength={500}
+            className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-sm text-foreground placeholder-muted-foreground resize-none focus:outline-none focus:ring-2 focus:ring-ring transition-colors"
+          />
+        </div>
 
         {/* Hidden submit (triggered externally via form.requestSubmit()) */}
         <button type="submit" className="hidden" aria-hidden />

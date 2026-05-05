@@ -2,12 +2,16 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import ProtectedRoute from '@/components/ProtectedRoute';
+import { FirstRunDemo } from '@/components/FirstRunDemo';
 import { useAuth } from '@/components/AuthProvider';
 import { Card, Button } from '@/components/ui';
 import { useToast } from '@/hooks/useToast';
+import { getFirstRunDemoSeen, markFirstRunDemoSeen } from '@/lib/firstRunDemo';
 import type { ListViewList, ListViewResult } from '@/lib/listView/contracts';
 import { ImportListsModal } from '@/components/ImportListsModal';
+import { CreateListModal } from '@/components/CreateListModal';
 import { emojiForListName } from '@/components/Icons';
 import { supabase } from '@/lib/supabaseClient';
 
@@ -24,18 +28,23 @@ function formatUpdated(updatedAt: string): string {
   return 'Updated last week';
 }
 
+function formatCreated(createdAt: string): string {
+  return 'Created ' + new Date(createdAt).toLocaleDateString('en-US', {
+    month: 'short', day: '2-digit', year: 'numeric',
+  });
+}
+
 async function getToken(): Promise<string | null> {
   const { data: { session } } = await supabase.auth.getSession();
   return session?.access_token ?? null;
 }
 
 export default function ListsPage() {
-  const { user } = useAuth();
+  const router = useRouter();
+  const { user, loading: authLoading } = useAuth();
   const { toast } = useToast();
   const [lists, setLists] = useState<ListViewList[]>([]);
   const [loading, setLoading] = useState(true);
-  const [creating, setCreating] = useState(false);
-  const [name, setName] = useState('');
   const [cursor, setCursor] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
@@ -47,12 +56,26 @@ export default function ListsPage() {
   const [newListModalOpen, setNewListModalOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [togglingStarId, setTogglingStarId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [sortOrder, setSortOrder] = useState<'recent' | 'az' | 'za' | 'oldest' | 'newest'>('recent');
+  const [demoReady, setDemoReady] = useState(false);
+  const [showDemo, setShowDemo] = useState(false);
 
   const PAGE_LIMIT = 50;
 
-  const filteredLists = searchTerm.trim()
-    ? lists.filter((l) => l.name.toLowerCase().includes(searchTerm.toLowerCase()))
-    : lists;
+  const filteredLists = (() => {
+    let result = searchTerm.trim()
+      ? lists.filter((l) => l.name.toLowerCase().includes(searchTerm.toLowerCase()))
+      : [...lists];
+    if (sortOrder === 'az')     result = result.sort((a, b) => a.name.localeCompare(b.name));
+    if (sortOrder === 'za')     result = result.sort((a, b) => b.name.localeCompare(a.name));
+    if (sortOrder === 'oldest') result = result.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    if (sortOrder === 'newest') result = result.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return result;
+  })();
+
+  // Top 3 most recently updated — shown only when not searching
+  const recentLists = !searchTerm.trim() ? lists.slice(0, 3) : [];
 
   const fetchLists = useCallback(async (opts?: { cursor?: string | null; append?: boolean }) => {
     const { cursor: cur, append } = opts ?? {};
@@ -94,7 +117,7 @@ export default function ListsPage() {
     };
     run()
       .catch(() => {
-        if (!append) setLists([]);
+      if (!append) setLists([]);
         toast.error("Couldn't load lists");
       })
       .finally(() => { if (!opts?.append) setLoading(false); });
@@ -105,62 +128,34 @@ export default function ListsPage() {
   }, [fetchLists]);
 
   useEffect(() => {
+    let mounted = true;
+    if (authLoading || !user) return;
+    void getFirstRunDemoSeen("lists").then((seen) => {
+      if (!mounted) return;
+      setShowDemo(!seen);
+      setDemoReady(true);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [authLoading, user]);
+
+  const dismissDemo = () => {
+    setShowDemo(false);
+    void markFirstRunDemoSeen("lists");
+  };
+
+  useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       const target = e.target as Element;
       if (menuOpenId && !target.closest('[data-list-menu]')) {
         setMenuOpenId(null);
+        setConfirmDeleteId(null);
       }
     };
     document.addEventListener('click', handleClickOutside);
     return () => document.removeEventListener('click', handleClickOutside);
   }, [menuOpenId]);
-
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = name.trim();
-    if (!trimmed) {
-      toast.error('Enter a list name');
-      return;
-    }
-    setCreating(true);
-    try {
-      const token = await getToken();
-      const res = await fetch('/api/lists/create', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ name: trimmed }),
-      });
-      type CreateListResponse = ListViewList & { error?: string };
-      const data = (await res.json().catch(() => ({}))) as Partial<CreateListResponse>;
-      if (!res.ok) {
-        const msg = (typeof data === 'object' && data && 'error' in data && data.error) || 'Couldn\'t save changes';
-        toast.error(msg ?? 'Couldn\'t save changes');
-        return;
-      }
-      setName('');
-      const created = data as { id: string; name: string; app_user_id?: string; source?: string; created_at?: string; updated_at?: string };
-      setLists((prev) => [{
-        id: created.id,
-        appUserId: created.app_user_id ?? '',
-        name: created.name,
-        source: created.source ?? 'web',
-        createdAt: created.created_at ?? new Date().toISOString(),
-        updatedAt: created.updated_at ?? new Date().toISOString(),
-        itemCount: 0,
-        doneCount: 0,
-      }, ...prev]);
-      toast.success('List created');
-      setNewListModalOpen(false);
-    } catch (err) {
-      console.error('Error creating list:', err);
-      toast.error('Couldn\'t save changes');
-    } finally {
-      setCreating(false);
-    }
-  };
 
   const handleRename = (list: ListViewList) => {
     setMenuOpenId(null);
@@ -223,11 +218,8 @@ export default function ListsPage() {
     }
   };
 
-  const handleDeleteClick = (list: ListViewList) => {
-    setMenuOpenId(null);
-    if (window.confirm('Delete this list?')) {
-      handleDelete(list);
-    }
+  const handleDeleteClick = (listId: string) => {
+    setConfirmDeleteId(listId);
   };
 
   const handleToggleStar = async (list: ListViewList) => {
@@ -268,75 +260,110 @@ export default function ListsPage() {
   const starredLists = filteredLists.filter((l) => l.isStarred);
   const otherLists = filteredLists.filter((l) => !l.isStarred);
 
-  const ListCard = ({ list }: { list: ListViewList }) => (
-    <Card
-      key={list.id}
-      className="rounded-2xl shadow-sm border border-border p-5 hover:border-primary/30 transition-colors h-44 flex flex-col"
-    >
-      <div className="flex items-start justify-between gap-2 flex-1 min-h-0">
-        <Link href={`/lists/${list.id}`} className="flex-1 min-w-0 flex flex-col h-full">
-          {/* Emoji — rounded square, warm tint */}
-          <div className="w-14 h-14 rounded-xl bg-primary/10 flex items-center justify-center text-3xl leading-none mb-3">
+  const ListCard = ({ list, sectionKey }: { list: ListViewList; sectionKey: string }) => {
+    const menuKey = `${sectionKey}:${list.id}`;
+    const isMenuOpen = menuOpenId === menuKey;
+    return (
+      <Card
+        key={list.id}
+        className="rounded-xl border border-border px-3 py-2.5 hover:border-primary/30 transition-colors"
+      >
+        <div className="flex items-center gap-3">
+          {/* Compact emoji square */}
+          <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center text-lg leading-none shrink-0">
             {emojiForListName(list.name)}
           </div>
-          <p className="font-bold text-base text-foreground mb-1">{list.name}</p>
-          <p className="text-xs text-muted-foreground mb-1">{formatUpdated(list.updatedAt)}</p>
-          {(list.itemCount ?? 0) > 0 && (
-            <p className="text-xs text-muted-foreground">
-              {list.itemCount} {list.itemCount === 1 ? 'item' : 'items'}
+
+          {/* Content */}
+          <Link href={`/lists/${list.id}`} className="flex-1 min-w-0">
+            <p className="font-semibold text-sm text-foreground leading-tight truncate">{list.name}</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {formatCreated(list.createdAt)}
+              {(list.itemCount ?? 0) > 0 && (
+                <span> · {list.itemCount} {list.itemCount === 1 ? 'item' : 'items'}</span>
+              )}
             </p>
-          )}
-        </Link>
-        <div className="relative flex-shrink-0" data-list-menu>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.preventDefault();
-              setMenuOpenId(menuOpenId === list.id ? null : list.id);
-            }}
-            className="h-8 w-8 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground"
-            aria-label="List actions"
-            disabled={!!deletingId}
-          >
-            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-              <circle cx="12" cy="6" r="1.5" />
-              <circle cx="12" cy="12" r="1.5" />
-              <circle cx="12" cy="18" r="1.5" />
-            </svg>
-          </button>
-          {menuOpenId === list.id && (
-            <div className="absolute right-0 top-full mt-1 py-1 rounded-lg border border-border bg-card shadow-md z-10 min-w-[140px]">
-              <button
-                type="button"
-                onClick={() => handleToggleStar(list)}
-                disabled={togglingStarId === list.id}
-                className="w-full px-3 py-2 text-left text-sm text-foreground hover:bg-muted flex items-center gap-2"
-              >
-                <svg className={`w-4 h-4 shrink-0 ${list.isStarred ? "text-yellow-500 fill-yellow-500" : "text-muted-foreground"}`} viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M11.48 3.499a.562.562 0 011.04 0l2.125 5.111a.563.563 0 00.475.345l5.518.442c.499.04.701.663.321.988l-4.204 3.602a.563.563 0 00-.182.557l1.285 5.385a.562.562 0 01-.84.61l-4.725-2.885a.563.563 0 00-.586 0L6.982 20.54a.562.562 0 01-.84-.61l1.285-5.386a.562.562 0 00-.182-.557l-4.204-3.602a.563.563 0 01.321-.988l5.518-.442a.563.563 0 00.475-.345L11.48 3.5z" />
-                </svg>
-                {list.isStarred ? 'Unstar' : 'Star'}
-              </button>
-              <button
-                type="button"
-                onClick={() => handleRename(list)}
-                className="w-full px-3 py-2 text-left text-sm text-foreground hover:bg-muted"
-              >
-                Rename list
-              </button>
-              <button
-                type="button"
-                onClick={() => handleDeleteClick(list)}
-                className="w-full px-3 py-2 text-left text-sm text-destructive hover:bg-muted"
-              >
-                Delete list
-              </button>
-            </div>
-          )}
+          </Link>
+
+          {/* Meatball menu */}
+          <div className="relative shrink-0" data-list-menu>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                setConfirmDeleteId(null);
+                setMenuOpenId(isMenuOpen ? null : menuKey);
+              }}
+              className="h-7 w-7 rounded-lg flex items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground"
+              aria-label="List actions"
+              disabled={!!deletingId}
+            >
+              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                <circle cx="12" cy="6" r="1.5" />
+                <circle cx="12" cy="12" r="1.5" />
+                <circle cx="12" cy="18" r="1.5" />
+              </svg>
+            </button>
+            {isMenuOpen && (
+              <div className="absolute right-0 top-full mt-1 py-1 rounded-lg border border-border bg-card shadow-md z-10 min-w-[160px]">
+                {confirmDeleteId === list.id ? (
+                  /* Inline delete confirmation */
+                  <div className="px-3 py-2">
+                    <p className="text-xs text-foreground mb-2">Delete this list?</p>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => { setConfirmDeleteId(null); setMenuOpenId(null); handleDelete(list); }}
+                        disabled={deletingId === list.id}
+                        className="flex-1 px-2 py-1 rounded text-xs font-medium bg-destructive text-white hover:bg-destructive/90 transition-colors"
+                      >
+                        Delete
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteId(null)}
+                        className="flex-1 px-2 py-1 rounded text-xs font-medium border border-border hover:bg-muted transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleStar(list)}
+                      disabled={togglingStarId === list.id}
+                      className="w-full px-3 py-2 text-left text-sm text-foreground hover:bg-muted flex items-center gap-2"
+                    >
+                      <svg className={`w-4 h-4 shrink-0 ${list.isStarred ? "text-yellow-500 fill-yellow-500" : "text-muted-foreground"}`} viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M11.48 3.499a.562.562 0 011.04 0l2.125 5.111a.563.563 0 00.475.345l5.518.442c.499.04.701.663.321.988l-4.204 3.602a.563.563 0 00-.182.557l1.285 5.385a.562.562 0 01-.84.61l-4.725-2.885a.563.563 0 00-.586 0L6.982 20.54a.562.562 0 01-.84-.61l1.285-5.386a.562.562 0 00-.182-.557l-4.204-3.602a.563.563 0 01.321-.988l5.518-.442a.563.563 0 00.475-.345L11.48 3.5z" />
+                      </svg>
+                      {list.isStarred ? 'Unstar' : 'Star'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleRename(list)}
+                      className="w-full px-3 py-2 text-left text-sm text-foreground hover:bg-muted"
+                    >
+                      Rename list
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteClick(list.id)}
+                      className="w-full px-3 py-2 text-left text-sm text-destructive hover:bg-muted"
+                    >
+                      Delete list
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
         </div>
-      </div>
-    </Card>
-  );
+      </Card>
+    );
+  };
 
   return (
     <ProtectedRoute>
@@ -345,16 +372,16 @@ export default function ListsPage() {
           {/* Header */}
           <div className="mb-6 flex flex-wrap items-center justify-between gap-2">
             <h1 className="text-3xl md:text-4xl font-semibold text-foreground">
-              Lists
-            </h1>
+                Lists
+              </h1>
             <Button onClick={() => setNewListModalOpen(true)}>
               New list
             </Button>
           </div>
 
-          {/* Search */}
-          <div className="mb-6">
-            <div className="relative">
+          {/* Search + Sort */}
+          <div className="mb-6 flex gap-3 items-center">
+            <div className="relative flex-1">
               <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
                 <circle cx="11" cy="11" r="8" />
                 <path d="m21 21-4.35-4.35" />
@@ -367,6 +394,17 @@ export default function ListsPage() {
                 className="w-full h-11 pl-10 pr-4 rounded-xl border border-border bg-card text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
               />
             </div>
+            <select
+              value={sortOrder}
+              onChange={(e) => setSortOrder(e.target.value as 'recent' | 'az' | 'za' | 'oldest' | 'newest')}
+              className="md:hidden h-11 px-3 rounded-xl border border-border bg-card text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 shrink-0"
+            >
+              <option value="recent">Recent</option>
+              <option value="newest">Newest first</option>
+              <option value="oldest">Oldest first</option>
+              <option value="az">A → Z</option>
+              <option value="za">Z → A</option>
+            </select>
           </div>
 
           <ImportListsModal
@@ -377,49 +415,20 @@ export default function ListsPage() {
             toast={toast}
           />
 
-          {/* New list modal */}
-          {newListModalOpen && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/20">
-              <Card className="w-full max-w-sm p-5">
-                <h3 className="text-lg font-semibold text-foreground mb-4">New list</h3>
-                <form onSubmit={handleCreate} className="space-y-4">
-                  <input
-                    type="text"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder="Enter a list name"
-                    maxLength={50}
-                    className="w-full h-11 px-4 rounded-xl border border-border bg-background text-foreground placeholder-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 text-base"
-                    autoFocus
-                  />
-                  <div className="flex gap-2 justify-end">
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      onClick={() => setNewListModalOpen(false)}
-                    >
-                      Cancel
-                    </Button>
-                    <Button
-                      type="submit"
-                      loading={creating}
-                      disabled={!name.trim() || creating}
-                    >
-                      Create
-                    </Button>
-                  </div>
-                </form>
-              </Card>
-            </div>
-          )}
+          <CreateListModal
+            isOpen={newListModalOpen}
+            onClose={() => setNewListModalOpen(false)}
+            onSuccess={(listId) => { setNewListModalOpen(false); router.push(`/lists/${listId}`); }}
+            toast={toast}
+          />
 
           {/* Rename modal */}
           {renameListId && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/20">
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-overlay">
               <Card className="w-full max-w-sm p-4">
                 <h3 className="text-lg font-semibold text-foreground mb-3">Rename list</h3>
-                <input
-                  type="text"
+              <input
+                type="text"
                   value={renameValue}
                   onChange={(e) => setRenameValue(e.target.value)}
                   onKeyDown={(e) => {
@@ -439,27 +448,31 @@ export default function ListsPage() {
                   >
                     Cancel
                   </Button>
-                  <Button
+                <Button
                     type="button"
                     onClick={handleRenameSubmit}
                     loading={renaming}
                     disabled={!renameValue.trim() || renaming}
                   >
                     Save
-                  </Button>
-                </div>
-              </Card>
+                </Button>
+              </div>
+          </Card>
             </div>
           )}
 
           {/* Lists */}
           {loading ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
               {[1, 2, 3].map((i) => (
-                <Card key={i} className="animate-pulse p-5 rounded-2xl">
-                  <div className="w-14 h-14 rounded-xl bg-muted mb-3" />
-                  <div className="h-4 bg-muted rounded w-3/4 mb-2" />
-                  <div className="h-3 bg-muted rounded w-1/3" />
+                <Card key={i} className="animate-pulse px-3 py-2.5 rounded-xl">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-lg bg-muted shrink-0" />
+                    <div className="flex-1">
+                      <div className="h-4 bg-muted rounded w-3/4 mb-1.5" />
+                      <div className="h-3 bg-muted rounded w-1/2" />
+                    </div>
+                  </div>
                 </Card>
               ))}
             </div>
@@ -474,6 +487,19 @@ export default function ListsPage() {
             </Card>
           ) : (
             <div className="space-y-8">
+              {/* Recent section — top 3 by updatedAt, hidden during search */}
+              {recentLists.length > 0 && (
+                <div>
+                  <div className="flex items-center gap-2 mb-3">
+                    <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Recent</h2>
+                    <div className="flex-1 h-px bg-border/40" />
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {recentLists.map((list) => <ListCard key={list.id} list={list} sectionKey="recent" />)}
+                  </div>
+                </div>
+              )}
+
               {/* Starred section */}
               {starredLists.length > 0 && (
                 <div>
@@ -481,8 +507,8 @@ export default function ListsPage() {
                     <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Starred</h2>
                     <div className="flex-1 h-px bg-border/40" />
                   </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {starredLists.map((list) => <ListCard key={list.id} list={list} />)}
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {starredLists.map((list) => <ListCard key={list.id} list={list} sectionKey="starred" />)}
                   </div>
                 </div>
               )}
@@ -495,8 +521,8 @@ export default function ListsPage() {
                     <div className="flex-1 h-px bg-border/40" />
                   </div>
                 )}
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {otherLists.map((list) => <ListCard key={list.id} list={list} />)}
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {otherLists.map((list) => <ListCard key={list.id} list={list} sectionKey="all" />)}
                 </div>
               </div>
             </div>
@@ -516,6 +542,12 @@ export default function ListsPage() {
           )}
         </main>
       </div>
+      <FirstRunDemo
+        page="lists"
+        isOpen={demoReady && showDemo}
+        onComplete={dismissDemo}
+        onSkip={dismissDemo}
+      />
     </ProtectedRoute>
   );
 }

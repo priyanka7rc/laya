@@ -10,7 +10,7 @@ export interface ChipProps extends HTMLAttributes<HTMLButtonElement> {
 
 const Chip = forwardRef<HTMLButtonElement, ChipProps>(
   ({ variant = 'filter', selected = false, className = '', children, ...props }, ref) => {
-    const base = 'px-4 py-2 rounded-full whitespace-nowrap text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background tap-target';
+    const base = 'inline-flex items-center justify-center px-4 py-2 rounded-full whitespace-nowrap text-sm font-medium leading-none transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background tap-target';
     const variants = {
       filter: selected
         ? 'bg-primary text-primary-foreground'

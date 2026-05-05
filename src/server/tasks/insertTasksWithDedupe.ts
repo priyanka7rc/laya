@@ -35,6 +35,10 @@ export interface InsertTasksWithDedupeParams {
   allowDuplicateIndices?: number[];
   source?: TaskSource;
   sourceMessageId?: string | null;
+  /** User-provided notes to store on the task (not parsed from text). */
+  notes?: string | null;
+  /** Custom remind_at ISO string; overrides the auto-computed 15-min-before value. */
+  remindAt?: string | null;
 }
 
 async function resolveAppUserIdOrThrow(supabase: SupabaseClient, params: {
@@ -66,6 +70,8 @@ export async function insertTasksWithDedupe(
     allowDuplicateIndices = [],
     source,
     sourceMessageId = null,
+    notes = null,
+    remindAt = null,
   } = params;
 
   const supabase = createClient(
@@ -176,7 +182,8 @@ export async function insertTasksWithDedupe(
     }
 
     const dueAtISO = computeDueAtFromLocal(userTz, dueDate, normalizedTime);
-    const remindAtISO = computeRemindAtFromDueAt(dueAtISO);
+    const computedRemindAt = computeRemindAtFromDueAt(dueAtISO);
+    const taskCategory = task.category ?? 'Tasks';
 
     const payload = {
       user_id: userId,
@@ -184,15 +191,17 @@ export async function insertTasksWithDedupe(
       source,
       source_message_id: sourceMessageId,
       title: (task.title ?? '').slice(0, 120),
+      notes: notes ?? null,
       due_date: task.due_date,
       due_time: task.due_time,
-      category: task.category ?? 'Tasks',
+      category: taskCategory,
+      tags: [taskCategory],
       inferred_date: !!task.inferred_date,
       inferred_time: !!task.inferred_time,
       is_done: false,
       reminder_sent: false,
       due_at: dueAtISO,
-      remind_at: remindAtISO,
+      remind_at: remindAt ?? computedRemindAt,
     };
 
     if (!payload.due_date || !payload.due_time) {

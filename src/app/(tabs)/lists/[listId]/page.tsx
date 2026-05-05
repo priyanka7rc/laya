@@ -8,6 +8,7 @@ import { Card, Button } from '@/components/ui';
 import { useToast } from '@/hooks/useToast';
 import { supabase } from '@/lib/supabaseClient';
 import type { ListItem } from '@/lib/listItems';
+import { emojiForListName } from '@/components/Icons';
 
 type ListDetailResponse = {
   list: { id: string; name: string };
@@ -431,56 +432,58 @@ export default function ListDetailPage() {
     <ProtectedRoute>
       <div className="min-h-screen bg-background transition-colors pb-24 md:pb-8">
         <main className="container mx-auto px-4 py-8 md:py-12 max-w-3xl">
-          <div className="mb-6 flex items-start justify-between gap-4">
-            <div className="flex-1 min-w-0">
+          <div className="mb-6">
+            {/* Row 1: back link (left) + delete button (right) */}
+            <div className="flex items-center justify-between mb-3">
               <Link
                 href="/lists"
-                className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground mb-2"
+                className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
               >
                 ← Back to lists
               </Link>
-              {!loading && (
-                editingName ? (
-                  <div className="flex flex-wrap items-center gap-2 mt-1">
-                    <input
-                      type="text"
-                      value={editNameValue}
-                      onChange={(e) => setEditNameValue(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') handleRenameList();
-                        if (e.key === 'Escape') {
-                          setEditingName(false);
-                          setEditNameValue(listName);
-                        }
-                      }}
-                      onBlur={() => handleRenameList()}
-                      className="text-3xl md:text-4xl font-semibold text-foreground w-full max-w-md px-2 py-1 rounded-lg border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/30"
-                      autoFocus
-                    />
-                  </div>
-                ) : (
-                  <h1
-                    className="text-3xl md:text-4xl font-semibold text-foreground cursor-pointer hover:bg-muted/50 rounded-lg px-2 py-1 -mx-2"
-                    onClick={() => {
-                      setEditNameValue(listName || '');
-                      setEditingName(true);
-                    }}
-                  >
-                    {listName || 'List'}
-                  </h1>
-                )
+              {!loading && listId && (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => handleDeleteList()}
+                  disabled={deleting}
+                  className="text-destructive hover:bg-destructive/10 shrink-0"
+                >
+                  Delete list
+                </Button>
               )}
             </div>
-            {!loading && listId && (
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => handleDeleteList()}
-                disabled={deleting}
-                className="text-destructive hover:bg-destructive/10 shrink-0"
-              >
-                Delete list
-              </Button>
+
+            {/* Row 2: list name (full width) */}
+            {!loading && (
+              editingName ? (
+                <input
+                  type="text"
+                  value={editNameValue}
+                  onChange={(e) => setEditNameValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleRenameList();
+                    if (e.key === 'Escape') {
+                      setEditingName(false);
+                      setEditNameValue(listName);
+                    }
+                  }}
+                  onBlur={() => handleRenameList()}
+                  className="text-3xl md:text-4xl font-semibold text-foreground w-full max-w-md px-2 py-1 rounded-lg border border-border bg-background focus:outline-none focus:ring-2 focus:ring-primary/30"
+                  autoFocus
+                />
+              ) : (
+                <h1
+                  className="text-3xl md:text-4xl font-semibold text-foreground cursor-pointer hover:bg-muted/50 rounded-lg px-2 py-1 -mx-2 inline-flex items-center gap-3"
+                  onClick={() => {
+                    setEditNameValue(listName || '');
+                    setEditingName(true);
+                  }}
+                >
+                  <span className="text-2xl md:text-3xl">{emojiForListName(listName || '')}</span>
+                  {listName || 'List'}
+                </h1>
+              )
             )}
           </div>
 
@@ -497,11 +500,6 @@ export default function ListDetailPage() {
               <Card className="mb-6">
                 <ItemInput listId={listId} onAdded={handleItemAdded} />
               </Card>
-              {!loading && (
-                <div className="mb-3 text-sm text-muted-foreground">
-                  {doneCount} / {totalCount} completed
-                </div>
-              )}
               <ItemList
                 items={items}
                 onToggle={handleToggle}

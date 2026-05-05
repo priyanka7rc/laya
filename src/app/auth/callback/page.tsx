@@ -1,9 +1,8 @@
 "use client";
 
-import { useEffect } from 'react';
+import { useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
-import { Suspense } from 'react';
 
 function AuthCallbackInner() {
   const router = useRouter();
@@ -12,20 +11,18 @@ function AuthCallbackInner() {
   useEffect(() => {
     const handleAuthCallback = async () => {
       const code = searchParams.get('code');
-      
+
       if (code) {
-        // Exchange the code for a session
         const { error } = await supabase.auth.exchangeCodeForSession(code);
-        
+
         if (error) {
           console.error('Error exchanging code for session:', error);
-          router.push('/signin');
+          router.push('/login');
         } else {
           router.push('/');
           router.refresh();
         }
       } else {
-        // No code, redirect to home
         router.push('/');
       }
     };
@@ -34,8 +31,8 @@ function AuthCallbackInner() {
   }, [router, searchParams]);
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-black">
-      <p className="text-white">Completing sign in...</p>
+    <div className="min-h-screen flex items-center justify-center bg-background">
+      <p className="text-muted-foreground">Completing sign in...</p>
     </div>
   );
 }
@@ -43,8 +40,8 @@ function AuthCallbackInner() {
 export default function AuthCallback() {
   return (
     <Suspense fallback={
-      <div className="min-h-screen flex items-center justify-center bg-black">
-        <p className="text-white">Preparing sign-in...</p>
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <p className="text-muted-foreground">Preparing sign-in...</p>
       </div>
     }>
       <AuthCallbackInner />

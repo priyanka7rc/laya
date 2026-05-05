@@ -43,12 +43,10 @@ export default function FloatingBrainDump() {
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   
-  // Voice recording states
   const [isListening, setIsListening] = useState(false);
   const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
 
   useEffect(() => {
-    // Initialize Speech Recognition
     if (typeof window !== 'undefined') {
       const speechWindow = window as BrowserWindowWithSpeech;
       const SpeechRecognition =
@@ -73,7 +71,6 @@ export default function FloatingBrainDump() {
             }
           }
 
-          // Show interim results in real-time
           if (interimTranscript) {
             setContent(prev => {
               const withoutInterim = prev.split('...')[0];
@@ -119,10 +116,8 @@ export default function FloatingBrainDump() {
       recognitionRef.current.stop();
       setIsListening(false);
       
-      // Clean up interim markers
       setContent(prev => prev.replace(/\.\.\.$/, '').trim());
       
-      // Auto-submit after stopping if there's content
       if (content.trim()) {
         setTimeout(() => {
           handleSubmit();
@@ -133,10 +128,9 @@ export default function FloatingBrainDump() {
 
   const LOG = '[BrainDump]';
 
-  // Task creation flow: parseDump (rules-only, no AI) → insert → success. Never waits on OpenAI.
   const handleSubmit = async () => {
     if (!content.trim() || !user) return;
-
+  
     console.log(LOG, '1. Starting save', { textLength: content.trim().length, userId: user.id });
     setLoading(true);
     try {
@@ -158,7 +152,7 @@ export default function FloatingBrainDump() {
       });
 
       console.log(LOG, '4. Response received', { status: response.status, ok: response.ok });
-
+  
       if (!response.ok) {
         const body = await response.text();
         let parsed: unknown;
@@ -177,7 +171,7 @@ export default function FloatingBrainDump() {
         }
         throw new Error(`Parse failed: ${response.status} ${body.slice(0, 200)}`);
       }
-
+  
       const { tasks, summary } = await response.json();
       console.log(LOG, '5. Parsed OK', { taskCount: tasks?.length, summary });
 
@@ -226,17 +220,17 @@ export default function FloatingBrainDump() {
       console.log(LOG, '7. Insert OK', { inserted: inserted?.length, duplicates: duplicates?.length });
 
       trackDumpParse(inserted?.length ?? 0);
-
+  
       setContent('');
       setIsOpen(false);
-
+      
       const currentPath = window.location.pathname;
       if (currentPath === '/tasks') {
         window.location.reload();
       } else {
-        router.refresh();
+      router.refresh();
       }
-
+      
       const insertedCount = Array.isArray(inserted) ? inserted.length : 0;
       const dupCount = Array.isArray(duplicates) ? duplicates.length : 0;
       const toastMsg = dupCount > 0
@@ -245,7 +239,6 @@ export default function FloatingBrainDump() {
       setTimeout(() => setToast(toastMsg), 100);
       console.log(LOG, '8. Done – success');
 
-      // Fire-and-forget: refine in background; refresh list if any task was updated (failure-safe, non-blocking)
       if (inserted?.length && session?.access_token) {
         const dupSet = new Set((duplicates ?? []).map((d: { index: number }) => d.index));
         const insertedIndices = tasks.map((_: unknown, i: number) => i).filter((i: number) => !dupSet.has(i));
@@ -288,14 +281,12 @@ export default function FloatingBrainDump() {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    // Submit on Cmd/Ctrl + Enter
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       handleSubmit();
     }
   };
 
-  // Don't show if not authenticated
   if (!user) return null;
 
   return (
@@ -303,7 +294,7 @@ export default function FloatingBrainDump() {
       {/* Floating Button — hidden on desktop */}
       <button
         onClick={() => setIsOpen(true)}
-        className="lg:hidden fixed bottom-36 right-4 md:bottom-6 md:right-6 z-50 w-16 h-16 bg-gradient-to-br from-purple-500 to-blue-600 text-white rounded-full shadow-lg hover:shadow-xl hover:scale-110 transition-all duration-200 flex items-center justify-center group"
+        className="lg:hidden fixed bottom-36 right-4 md:bottom-6 md:right-6 z-50 w-16 h-16 bg-primary text-primary-foreground rounded-full shadow-lg hover:shadow-xl hover:scale-110 transition-all duration-200 flex items-center justify-center group"
         aria-label="Open Brain Dump"
         title="Brain Dump 💡"
       >
@@ -328,32 +319,28 @@ export default function FloatingBrainDump() {
         <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center">
           {/* Backdrop */}
           <div
-            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            className="absolute inset-0 bg-overlay backdrop-blur-sm"
             onClick={() => {
-              if (isListening) {
-                stopListening();
-              }
+              if (isListening) stopListening();
               setIsOpen(false);
             }}
           />
 
           {/* Modal */}
-          <div className="relative w-full max-w-lg bg-gray-900 rounded-t-2xl md:rounded-2xl shadow-2xl p-6 animate-slide-up md:animate-fade-in">
+          <div className="relative w-full max-w-lg bg-card border border-border rounded-t-2xl md:rounded-2xl shadow-2xl p-6 animate-slide-up md:animate-fade-in">
             <div className="flex items-center justify-between mb-4">
               <div>
-                <h2 className="text-xl font-bold text-white">Brain Dump 🧠</h2>
-                <p className="text-sm text-gray-400">
+                <h2 className="text-xl font-bold text-foreground">Brain Dump 🧠</h2>
+                <p className="text-sm text-muted-foreground">
                   {isListening ? '🎤 Listening...' : 'Quick capture your thoughts'}
                 </p>
               </div>
               <button
                 onClick={() => {
-                  if (isListening) {
-                    stopListening();
-                  }
+                  if (isListening) stopListening();
                   setIsOpen(false);
                 }}
-                className="text-gray-400 hover:text-white transition-colors"
+                className="text-muted-foreground hover:text-foreground transition-colors"
               >
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
@@ -363,11 +350,7 @@ export default function FloatingBrainDump() {
                   stroke="currentColor"
                   className="w-6 h-6"
                 >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M6 18L18 6M6 6l12 12"
-                  />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                 </svg>
               </button>
             </div>
@@ -379,7 +362,7 @@ export default function FloatingBrainDump() {
                   placeholder="What's on your mind?"
               autoFocus
               rows={6}
-              className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500 resize-none"
+              className="w-full px-4 py-3 bg-elevated border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring resize-none"
             />
 
             <div className="flex items-center justify-between mt-4">
@@ -389,8 +372,8 @@ export default function FloatingBrainDump() {
                   onClick={isListening ? stopListening : startListening}
                   className={`p-3 rounded-full transition-all ${
                     isListening
-                      ? 'bg-red-600 hover:bg-red-700 animate-pulse'
-                      : 'bg-gray-800 hover:bg-gray-700'
+                      ? 'bg-danger hover:bg-danger/80 animate-pulse'
+                      : 'bg-muted hover:bg-soft'
                   }`}
                   aria-label={isListening ? 'Stop recording' : 'Start recording'}
                 >
@@ -399,7 +382,7 @@ export default function FloatingBrainDump() {
                       xmlns="http://www.w3.org/2000/svg"
                       fill="currentColor"
                       viewBox="0 0 24 24"
-                      className="w-5 h-5 text-white"
+                      className="w-5 h-5 text-danger-foreground"
                     >
                       <rect x="6" y="6" width="12" height="12" rx="2" />
                     </svg>
@@ -410,7 +393,7 @@ export default function FloatingBrainDump() {
                       viewBox="0 0 24 24"
                       strokeWidth={2}
                       stroke="currentColor"
-                      className="w-5 h-5 text-white"
+                      className="w-5 h-5 text-foreground"
                     >
                       <path
                         strokeLinecap="round"
@@ -421,7 +404,7 @@ export default function FloatingBrainDump() {
                   )}
                 </button>
                 
-              <span className="text-xs text-gray-500">
+                <span className="text-xs text-muted-foreground">
                   {isListening ? 'Recording...' : 'Cmd/Ctrl + Enter to save'}
               </span>
               </div>
@@ -429,19 +412,17 @@ export default function FloatingBrainDump() {
               <div className="flex gap-2">
                 <button
                   onClick={() => {
-                    if (isListening) {
-                      stopListening();
-                    }
+                    if (isListening) stopListening();
                     setIsOpen(false);
                   }}
-                  className="px-4 py-2 text-gray-400 hover:text-white transition-colors"
+                  className="px-4 py-2 text-muted-foreground hover:text-foreground transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleSubmit}
                   disabled={!content.trim() || loading || isListening}
-                  className="px-6 py-2 bg-gradient-to-r from-purple-500 to-blue-600 text-white rounded-lg font-medium hover:from-purple-600 hover:to-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                  className="px-6 py-2 bg-primary text-primary-foreground rounded-lg font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
                 >
                   {loading ? 'Saving...' : 'Capture'}
                 </button>
@@ -451,7 +432,6 @@ export default function FloatingBrainDump() {
         </div>
       )}
 
-      {/* Toast Notification */}
       {toast && (
         <Toast
           message={toast}

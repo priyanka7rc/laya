@@ -14,6 +14,9 @@
  */
 
 import { createClient } from '@supabase/supabase-js';
+import { log, warn, error as logError, logInterpretation, logExecutionPlan, logClassification, logNormalization, logSufficiency, logResponseSafety } from '@/lib/logger';
+import { auditTurn, auditCorrection } from '@/lib/auditLog';
+import { interpretTurn } from '@/lib/turnInterpreter';
 import { detectCategory } from './categories';
 import { toHHMM } from './taskRulesParser';
 import { processWithLaya, ConversationMessage } from './laya-brain';
@@ -21,6 +24,18 @@ import { transcribeAudioFromWhatsApp } from './openai';
 import { sendWhatsAppMessage } from './whatsapp-client';
 import { splitBrainDump } from './brainDumpParser';
 import { textToProposedTasksFromSegments, type ProposedTask } from './task_intake';
+import { parseCompoundIntent, type CompoundListAction } from './compoundIntentParser';
+import {
+  getConversationState,
+  upsertConversationState,
+  clearConversationState,
+  type WaConversationState,
+} from '@/lib/waConversationState';
+import {
+  detectTaskFollowUpIntent,
+  detectListItemFollowUpIntent,
+  detectEntityToListIntent,
+} from '@/lib/waFollowUpParser';
 import { insertTasksWithDedupe } from '@/server/tasks/insertTasksWithDedupe';
 import { ocrTextToProposedTasks } from './ocrCandidates';
 import { buildOcrImportPreview } from '@/lib/ocr_import_preview';
@@ -70,6 +85,9 @@ import {
   updateListItem,
   softDeleteListItem,
 } from '@/lib/listItems';
+import { safeResponseGuard } from '@/lib/responseSafetyLayer';
+import { detectUnsupportedFeature } from '@/lib/unsupportedFeatureDetector';
+import type { PendingConfirmation } from '@/lib/waConversationState';
 
 // ============================================
 // SUPABASE CLIENT
@@ -79,6 +97,55 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY! // Use service role for backend operations
 );
+
+// ============================================
+// NON-ENGLISH DETECTION + TRANSLATION
+// ============================================
+
+/**
+ * Heuristic: returns true when the text likely contains non-English script.
+ * Detects scripts with Unicode ranges well outside Latin (Arabic, Devanagari,
+ * CJK, Cyrillic, Hebrew, Thai, etc.).
+ * Does NOT trigger on English words with diacritics (café, naïve, etc.).
+ */
+function looksNonEnglish(text: string): boolean {
+  // Non-ASCII script ranges: Arabic, Hebrew, Devanagari, CJK, Hangul, Thai, Cyrillic, etc.
+  const NON_LATIN_RE = /[\u0600-\u06FF\u0590-\u05FF\u0900-\u097F\u4E00-\u9FFF\uAC00-\uD7AF\u0E00-\u0E7F\u0400-\u04FF]/;
+  if (NON_LATIN_RE.test(text)) return true;
+
+  // Heuristic: if >50% of words are unrecognised as English characters, flag it.
+  const words = text.trim().split(/\s+/);
+  if (words.length < 3) return false; // too short to judge
+  const nonLatinWords = words.filter((w) => /[^\x00-\x7F]/.test(w));
+  return nonLatinWords.length / words.length > 0.5;
+}
+
+/**
+ * Translate text to English using LLM.
+ * Returns null on any error (caller should skip translation flow).
+ */
+async function translateToEnglish(text: string): Promise<string | null> {
+  try {
+    const OpenAI = (await import('openai')).default;
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const response = await openai.chat.completions.create({
+      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content: 'You translate text to English. Reply with ONLY the English translation, nothing else.',
+        },
+        { role: 'user', content: text },
+      ],
+      temperature: 0,
+      max_tokens: 200,
+    });
+    const translated = response.choices[0]?.message?.content?.trim();
+    return translated || null;
+  } catch {
+    return null;
+  }
+}
 
 const TASK_QUERY_PHRASES = [
   'tasks',
@@ -92,45 +159,24 @@ const TASK_QUERY_PHRASES = [
 const QUICK_ADD_EXPIRY_MS = 5 * 60 * 1000;
 const QUICK_ADD_EXIT_PHRASES = ['done', 'exit', 'cancel', 'remove', 'help'];
 
-// ============================================
-// CONVERSATIONAL FOCUS STORE
-// ============================================
+/**
+ * Plain social phrases that must never be treated as task titles.
+ * The guard is an exact-match check on the trimmed, lowercased message so
+ * "reminder: hi" still reaches task creation.
+ */
+const CHIT_CHAT_PHRASES = new Set([
+  'hi', 'hey', 'hello', 'hiya', 'howdy',
+  'thanks', 'thank you', 'ty', 'thx',
+  'ok', 'okay', 'k', 'kk',
+  'great', 'awesome', 'nice', 'cool', 'good',
+  'sure', 'yep', 'yes', 'yup', 'yeah',
+  'nope', 'no', 'nah',
+  'got it', 'got it!', 'noted',
+  'bye', 'goodbye', 'cya',
+]);
 
-interface FocusState {
-  taskId: string;
-  setAt: Date;
-}
-
-// In-memory store for current focus per user
-// TTL: 2 hours (generous, cleared explicitly on new task/query)
-const userFocusStore = new Map<string, FocusState>();
-
-function setFocus(userId: string, taskId: string): void {
-  userFocusStore.set(userId, { taskId, setAt: new Date() });
-  console.log(`[WA] Focus: set | userId=${userId} | taskId=${taskId}`);
-}
-
-function getFocus(userId: string): string | null {
-  const focus = userFocusStore.get(userId);
-  if (!focus) return null;
-  
-  // Check TTL (2 hours)
-  const twoHoursAgo = new Date();
-  twoHoursAgo.setHours(twoHoursAgo.getHours() - 2);
-  
-  if (focus.setAt < twoHoursAgo) {
-    userFocusStore.delete(userId);
-    console.log(`[WA] Focus: expired | userId=${userId}`);
-    return null;
-  }
-  
-  return focus.taskId;
-}
-
-function clearFocus(userId: string, reason: string): void {
-  userFocusStore.delete(userId);
-  console.log(`[WA] Focus: cleared | userId=${userId} | reason=${reason}`);
-}
+// userFocusStore (in-memory Map) replaced by wa_conversation_state (durable DB).
+// See src/lib/waConversationState.ts.
 
 // ============================================
 // LIST ACTION COUNTER
@@ -259,9 +305,9 @@ export async function processWhatsAppMessage(message: IncomingMessage): Promise<
   try {
     // Log inbound message details
     const textPreview = message.content 
-      ? message.content.substring(0, 30) + (message.content.length > 30 ? '...' : '')
+      ? message.content.substring(0, 60) + (message.content.length > 60 ? '...' : '')
       : null;
-    console.log(
+    log(
       `[WA] Inbound | phone=${message.phoneNumber} | ` +
       `msgId=${message.messageId} | type=${message.messageType} | ` +
       `textLen=${message.content?.length || 0} | ` +
@@ -272,7 +318,7 @@ export async function processWhatsAppMessage(message: IncomingMessage): Promise<
     const userId = await getOrCreateUser(message.phoneNumber);
     if (!userId) {
       // User requires account linking
-      console.log(`[WA] Route: LINKING | phone=${message.phoneNumber}`);
+      log(`[WA] Route: LINKING | phone=${message.phoneNumber} → sending link message`);
       const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
       const linkUrl = `${appUrl}/link-whatsapp`;
       await sendWhatsAppMessage(
@@ -287,8 +333,11 @@ export async function processWhatsAppMessage(message: IncomingMessage): Promise<
       return; // Exit early, don't process message
     }
 
+    log(`[WA] User resolved | phone=${message.phoneNumber} | userId=${userId}`);
+
     // 1b. Handle image/document: OCR → canonical intake → insert (wa_media)
     if ((message.messageType === 'image' || message.messageType === 'document') && message.mediaUrl) {
+      log(`[WA] Route: MEDIA | userId=${userId} | type=${message.messageType}`);
       await handleWhatsAppMedia(userId, message);
       return;
     }
@@ -298,7 +347,7 @@ export async function processWhatsAppMessage(message: IncomingMessage): Promise<
     let audioUrl: string | null = null;
 
     if (message.messageType === 'audio' && message.audioId) {
-      console.log('🎤 Transcribing audio message...');
+      log(`[WA] Route: AUDIO | userId=${userId} | transcribing...`);
       // audioId for Gupshup is the direct media URL
       const transcription = await transcribeAudioFromWhatsApp(
         message.audioId,
@@ -307,11 +356,12 @@ export async function processWhatsAppMessage(message: IncomingMessage): Promise<
       );
       finalText = transcription.text;
       audioUrl = transcription.audioUrl;
-      console.log(`📝 Transcription: "${finalText}"`);
+      log(`[WA] Transcription complete | text="${finalText.substring(0, 80)}"`);
     } else if (message.content) {
       finalText = message.content;
+      log(`[WA] Text content | userId=${userId} | text="${finalText.substring(0, 80)}"`);
     } else {
-      console.error('❌ No content or audio to process');
+      logError('[WA] No content or audio to process | userId=' + userId);
       await sendWhatsAppMessage(
         message.phoneNumber,
         "I didn't add this as a task. If you want me to add it, just say add."
@@ -338,7 +388,7 @@ export async function processWhatsAppMessage(message: IncomingMessage): Promise<
     const lowerTrimmed = trimmedText.toLowerCase();
 
     if (lowerTrimmed === 'stop' || lowerTrimmed === 'stopall' || lowerTrimmed === 'unsubscribe') {
-      console.log(`[WA] Route: STOP-START (opt-out) | userId=${userId}`);
+      log(`[WA] Route: OPT-OUT | userId=${userId}`);
       
       // Update opted_out status
       const { error: optOutError } = await supabase
@@ -359,7 +409,7 @@ export async function processWhatsAppMessage(message: IncomingMessage): Promise<
     }
 
     if (lowerTrimmed === 'start') {
-      console.log(`[WA] Route: STOP-START (opt-in) | userId=${userId}`);
+      log(`[WA] Route: OPT-IN | userId=${userId}`);
       
       // Update opted_out status
       const { error: optInError } = await supabase
@@ -407,7 +457,7 @@ export async function processWhatsAppMessage(message: IncomingMessage): Promise<
     );
 
     if (shouldEnableDigest) {
-      console.log(`[WA] Route: DIGEST-OPT-IN | userId=${userId}`);
+      log(`[WA] Route: DIGEST-OPT-IN | userId=${userId}`);
       
       const { error: enableError } = await supabase
         .from('whatsapp_users')
@@ -426,7 +476,7 @@ export async function processWhatsAppMessage(message: IncomingMessage): Promise<
     }
 
     if (shouldDisableDigest) {
-      console.log(`[WA] Route: DIGEST-OPT-OUT | userId=${userId}`);
+      log(`[WA] Route: DIGEST-OPT-OUT | userId=${userId}`);
       
       const { error: disableError } = await supabase
         .from('whatsapp_users')
@@ -453,7 +503,67 @@ export async function processWhatsAppMessage(message: IncomingMessage): Promise<
       rawPayload: message.rawPayload,
     });
 
-    // 3a. Check for negative confirmation to pending clarification
+    // [NEW] 3.0 Load durable conversation state once per turn.
+    // convState is null when no prior context exists or when the row has expired.
+    const convState = await getConversationState(userId);
+
+    // [NEW] 3a-clarification-apply. Proper FSM check for clarification_pending.
+    // Replaces the old brittle content-string hack (checkAndClearPendingClarification).
+    const pendingClarification = await getActivePendingClarification(userId);
+    if (pendingClarification) {
+      const numMatch = /^([1-9]\d*)$/.exec(lowerTrimmed);
+      const isNegative = ['no', 'not that', 'never mind', 'nevermind', 'cancel'].includes(lowerTrimmed);
+
+      if (isNegative) {
+        log(`[WA] Route: CLARIFICATION-CANCEL | userId=${userId}`);
+        await deletePendingClarification(pendingClarification.id);
+        await sendWhatsAppMessage(message.phoneNumber, "Okay, no changes made.");
+        return;
+      }
+
+      if (numMatch) {
+        const selectedIndex = parseInt(numMatch[1]!, 10) - 1;
+        const candidates = pendingClarification.payload.candidates;
+        if (selectedIndex >= 0 && selectedIndex < candidates.length) {
+          const selected = candidates[selectedIndex]!;
+          const pending = pendingClarification.payload.pendingAction;
+          log(`[WA] Route: CLARIFICATION-APPLY | userId=${userId} | selected=${selected.id}`);
+          await deletePendingClarification(pendingClarification.id);
+          if (pending?.type === 'add_item') {
+            // Execute the deferred add-item action
+            const listResult = await getListByName(pendingClarification.app_user_id, selected.title);
+            const list = listResult && !('type' in listResult) ? listResult : null;
+            if (list) {
+              await insertListItems({ appUserId: pendingClarification.app_user_id, listId: list.id, items: [pending.item], source: 'whatsapp' });
+              await upsertConversationState(userId, { active_list_id: list.id, last_list_name: list.name });
+              await sendWhatsAppMessage(message.phoneNumber, `Added "${pending.item}" to *${list.name}*.`);
+            } else {
+              await sendWhatsAppMessage(message.phoneNumber, "I couldn't find that list. Try again with the full name.");
+            }
+          } else {
+            // Selection resolved a pronoun reference — update active task
+            await upsertConversationState(userId, { active_task_id: selected.id, last_task_title: selected.title });
+            await sendWhatsAppMessage(message.phoneNumber, `Got it — now focusing on "*${selected.title}*". What would you like to do with it?`);
+          }
+          return;
+        }
+        // Out of range
+        await sendWhatsAppMessage(
+          message.phoneNumber,
+          `Please reply with a number between 1 and ${candidates.length}.`
+        );
+        return;
+      }
+
+      // Unrecognized reply — re-send the clarification prompt
+      const lines = pendingClarification.payload.candidates
+        .map((c, i) => `${i + 1}) ${c.title}`)
+        .join('\n');
+      await sendWhatsAppMessage(message.phoneNumber, `Which one did you mean?\n${lines}\n\nReply with a number.`);
+      return;
+    }
+
+    // 3a. Check for negative confirmation (no active clarification — continue with normal flow)
     const isNegativeConfirmation = 
       lowerTrimmed === 'no' ||
       lowerTrimmed === 'not that' ||
@@ -462,17 +572,13 @@ export async function processWhatsAppMessage(message: IncomingMessage): Promise<
       lowerTrimmed === 'cancel';
 
     if (isNegativeConfirmation) {
-      console.log('❌ Negative confirmation detected');
-      const hadPendingClarification = await checkAndClearPendingClarification(userId, message.phoneNumber);
-      if (hadPendingClarification) {
-        return; // Exit early, already sent cancellation message
-      }
-      // If no pending clarification, continue with normal flow
+      log(`[WA] Route: NEGATIVE-CONFIRMATION | userId=${userId}`);
+      // No pending clarification row found — fall through to normal flow
     }
 
     // 3a-undo. UNDO handler: restore last deleted tasks within 5 min window
     if (lowerTrimmed === 'undo') {
-      console.log(`[WA] Route: UNDO | userId=${userId}`);
+      log(`[WA] Route: UNDO | userId=${userId}`);
       const { data: waUser } = await supabase
         .from('whatsapp_users')
         .select('last_deleted_task_ids, last_deleted_at, auth_user_id')
@@ -525,7 +631,7 @@ export async function processWhatsAppMessage(message: IncomingMessage): Promise<
     // 3a-delete. DELETE intent handler
     const deleteIntent = parseDeleteIntent(finalText);
     if (deleteIntent && deleteIntent.kind !== 'undo') {
-      console.log(`[WA] Route: DELETE | userId=${userId} | kind=${deleteIntent.kind}`);
+      log(`[WA] Route: DELETE | userId=${userId} | kind=${deleteIntent.kind}`);
       await handleTaskDelete(userId, finalText, message.phoneNumber, message.replyToMessage ?? null);
       return;
     }
@@ -578,6 +684,13 @@ export async function processWhatsAppMessage(message: IncomingMessage): Promise<
         source: 'whatsapp',
         authUserId: userId,
       });
+      // Keep active_task_id current after edit so further follow-ups work
+      if (updatedTask) {
+        await upsertConversationState(userId, {
+          active_task_id: activePending.task_id,
+          last_task_title: updatedTask.title ?? undefined,
+        });
+      }
       const summary = formatEditConfirmation(updatedTask, patch);
       const sendResult = await sendWhatsAppMessage(message.phoneNumber, summary);
       if (!sendResult) {
@@ -590,7 +703,7 @@ export async function processWhatsAppMessage(message: IncomingMessage): Promise<
 
     // 3a-edit-select. Edit selection intent: reply-anchored or search fallback → create pending
     if (editSelectionIntent) {
-      console.log(`[WA] Route: EDIT-SELECT | userId=${userId} | kind=${editSelectionIntent.kind}`);
+      log(`[WA] Route: EDIT-SELECT | userId=${userId} | kind=${editSelectionIntent.kind}`);
       const handled = await handleEditSelect(
         userId,
         finalText,
@@ -673,8 +786,19 @@ export async function processWhatsAppMessage(message: IncomingMessage): Promise<
           explicitAddIntent.listName.toLowerCase().trim() !==
             activeQuickAdd.payload.listName.toLowerCase().trim();
 
-        if (isExitPhrase || isAddToDifferentList || isDoneRemove || isListCommand || isTaskQuery) {
+        // New interruption exits: delete command, edit-select command, or a task-creation message
+        const isDeleteCommand = parseDeleteIntent(finalText) !== null;
+        const isEditSelectCommand = parseEditSelectionIntent(finalText) !== null;
+        const compoundCheckForInterrupt = parseCompoundIntent(finalText);
+        const isTaskCreationMessage = compoundCheckForInterrupt.tasks.length > 0 && compoundCheckForInterrupt.listActions.length === 0;
+
+        const shouldExitQuickAdd =
+          isExitPhrase || isAddToDifferentList || isDoneRemove || isListCommand || isTaskQuery ||
+          isDeleteCommand || isEditSelectCommand || isTaskCreationMessage;
+
+        if (shouldExitQuickAdd) {
           await clearQuickAdd(userId);
+          // Do NOT return — let the message fall through to the appropriate handler
         } else {
           // Plain text or "add X" (no list) or "add X to <same list>" → treat as Quick Add
           const items = explicitAddIntent?.items ?? splitItemPhrase(finalText);
@@ -707,10 +831,169 @@ export async function processWhatsAppMessage(message: IncomingMessage): Promise<
       }
     }
 
+    // [NEW] 3.4 Follow-up resolution — only runs when prior conversation state exists.
+    // These three sub-steps handle implicit references like "make it Friday",
+    // "add curd too", or "add it to shopping" that target the last active task/list.
+    if (convState) {
+      // 3.4a Task follow-up: "make it Friday", "move it to tomorrow", "delete it"
+      const taskFollowUp = detectTaskFollowUpIntent(finalText);
+      if (taskFollowUp && convState.active_task_id) {
+        log(`[WA] Route: TASK-FOLLOW-UP | type=${taskFollowUp.type} | taskId=${convState.active_task_id}`);
+        if (taskFollowUp.type === 'delete') {
+          // Delegate to the existing delete flow via a synthetic delete intent
+          // by falling through — but first clear state so we don't loop
+          await upsertConversationState(userId, { active_task_id: null, last_task_title: null });
+        } else if (taskFollowUp.type === 'mark_done') {
+          const { error: doneErr } = await supabase
+            .from('tasks')
+            .update({ is_done: true, done_at: new Date().toISOString() })
+            .eq('id', convState.active_task_id)
+            .eq('user_id', userId);
+          if (!doneErr) {
+            const title = convState.last_task_title ?? 'that task';
+            await sendWhatsAppMessage(message.phoneNumber, `Done! Marked *${title}* as complete. ✅`);
+            await upsertConversationState(userId, { active_task_id: null, last_task_title: null });
+            return;
+          }
+        } else if (taskFollowUp.type === 'patch') {
+          const patch = taskFollowUp.patch;
+          const tz = await getUserTimezoneByAuthUserId(userId);
+          const updatePayload: Parameters<typeof updateTaskFields>[0]['patch'] = {};
+          if (patch.title !== undefined) updatePayload.title = patch.title;
+          if (patch.due_date !== undefined) updatePayload.due_date = patch.due_date;
+          if (patch.due_time !== undefined) updatePayload.due_time = patch.due_time;
+          if (patch.category !== undefined) updatePayload.category = patch.category;
+          const hasChanges = Object.keys(updatePayload).length > 0;
+          if (hasChanges) {
+            // We need app_user_id for updateTaskFields — look it up from convState or supabase
+            const { data: appUserRow } = await supabase
+              .from('app_users')
+              .select('id')
+              .eq('auth_user_id', userId)
+              .maybeSingle<{ id: string }>();
+            if (appUserRow) {
+              const { updatedTask } = await updateTaskFields({
+                appUserId: appUserRow.id,
+                taskId: convState.active_task_id,
+                patch: updatePayload,
+                timezone: tz,
+                source: 'whatsapp',
+                authUserId: userId,
+              });
+              const summary = formatEditConfirmation(updatedTask, patch);
+              await sendWhatsAppMessage(message.phoneNumber, summary);
+              if (updatedTask) {
+                await upsertConversationState(userId, { last_task_title: updatedTask.title ?? undefined });
+              }
+              return;
+            }
+          }
+        }
+        // If none of the above fired cleanly, fall through to normal routing
+      }
+
+      // 3.4b List-item follow-up: "add curd too", "also add paneer", "add X and Y" (with active list)
+      const listItemFollowUp = detectListItemFollowUpIntent(finalText, !!convState.active_list_id);
+      if (listItemFollowUp && convState.active_list_id) {
+        log(`[WA] Route: LIST-ITEM-FOLLOW-UP | listId=${convState.active_list_id}`);
+        const { data: appUserRow } = await supabase
+          .from('app_users')
+          .select('id')
+          .eq('auth_user_id', userId)
+          .maybeSingle<{ id: string }>();
+        if (appUserRow) {
+          const { inserted } = await insertListItems({
+            appUserId: appUserRow.id,
+            listId: convState.active_list_id,
+            items: listItemFollowUp.items,
+            source: 'whatsapp',
+          });
+          const listName = convState.last_list_name ?? 'the list';
+          if (inserted.length > 0) {
+            const addedMsg =
+              inserted.length === 1
+                ? `Added *${inserted[0]!.text}* to *${listName}*.`
+                : `Added ${inserted.length} items to *${listName}*:\n${inserted.map((i) => `• ${i.text}`).join('\n')}`;
+            await sendWhatsAppMessage(message.phoneNumber, addedMsg);
+          } else {
+            await sendWhatsAppMessage(message.phoneNumber, `No new items added — already in *${listName}*.`);
+          }
+          return;
+        }
+      }
+
+      // 3.4c Entity-to-list follow-up: "add it to shopping", "put it in grocery"
+      const entityToList = detectEntityToListIntent(finalText);
+      if (entityToList !== null && convState.last_entity_text) {
+        log(`[WA] Route: ENTITY-TO-LIST | entity="${convState.last_entity_text}" | listName="${entityToList.listName}"`);
+        const { data: appUserRow } = await supabase
+          .from('app_users')
+          .select('id')
+          .eq('auth_user_id', userId)
+          .maybeSingle<{ id: string }>();
+        if (appUserRow) {
+          if (entityToList.listName) {
+            const allLists = await getUserLists(appUserRow.id);
+            const lower = entityToList.listName.toLowerCase();
+            const exact = allLists.filter((l: ListInfo) => l.name.toLowerCase() === lower);
+            const partial = allLists.filter((l: ListInfo) => l.name.toLowerCase().includes(lower));
+            const matches = exact.length > 0 ? exact : partial;
+
+            if (matches.length === 1) {
+              const target = matches[0]!;
+              await insertListItems({
+                appUserId: appUserRow.id,
+                listId: target.id,
+                items: [convState.last_entity_text],
+                source: 'whatsapp',
+              });
+              await upsertConversationState(userId, { active_list_id: target.id, last_list_name: target.name });
+              await sendWhatsAppMessage(
+                message.phoneNumber,
+                `Added *${convState.last_entity_text}* to *${target.name}*.`
+              );
+              return;
+            } else if (matches.length > 1) {
+              // Ambiguous — create clarification_pending
+              await insertPendingClarification(userId, appUserRow.id, {
+                questionType: 'which_list',
+                candidates: matches.map((l: ListInfo) => ({ id: l.id, title: l.name })),
+                pendingAction: { type: 'add_item', listName: entityToList.listName!, item: convState.last_entity_text },
+              });
+              const prompt = `Which list?\n${matches.map((l: ListInfo, i: number) => `${i + 1}) ${l.name}`).join('\n')}\n\nReply with a number.`;
+              await sendWhatsAppMessage(message.phoneNumber, prompt);
+              return;
+            } else {
+              await sendWhatsAppMessage(
+                message.phoneNumber,
+                `I couldn't find a list called "${entityToList.listName}". Say "create list ${entityToList.listName}" to create it.`
+              );
+              return;
+            }
+          } else {
+            // No list name specified — ask with clarification
+            const allLists = await getUserLists(appUserRow.id);
+            if (allLists.length > 0) {
+              await insertPendingClarification(userId, appUserRow.id, {
+                questionType: 'which_list',
+                candidates: allLists.slice(0, 5).map((l: ListInfo) => ({ id: l.id, title: l.name })),
+                pendingAction: { type: 'add_item', listName: '', item: convState.last_entity_text },
+              });
+              const prompt = `Which list should I add *${convState.last_entity_text}* to?\n${allLists.slice(0, 5).map((l: ListInfo, i: number) => `${i + 1}) ${l.name}`).join('\n')}\n\nReply with a number.`;
+              await sendWhatsAppMessage(message.phoneNumber, prompt);
+            } else {
+              await sendWhatsAppMessage(message.phoneNumber, "You don't have any lists yet. Say \"create list <name>\" to make one.");
+            }
+            return;
+          }
+        }
+      }
+    }
+
     // 3b-add-to-list. Add items to list (reply-anchored or by name)
     const addToListIntent = detectAddToListIntent(finalText);
     if (addToListIntent && addToListIntent.items.length > 0) {
-      console.log(`[WA] Route: ADD-TO-LIST | userId=${userId} | items=${addToListIntent.items.length}`);
+      log(`[WA] Route: ADD-TO-LIST | userId=${userId} | items=${addToListIntent.items.length}`);
       const handled = await handleAddToList(
         userId,
         addToListIntent,
@@ -785,111 +1068,43 @@ remove bread`
       if (listReadHandled) return;
     }
 
-    // 3c. Detect query intent
-    const lowerText = finalText.toLowerCase();
-    const isQuery = 
-      lowerText.includes('what') ||
-      lowerText.includes('show') ||
-      lowerText.includes('tell me') ||
-      lowerText.includes('list') ||
-      lowerText.includes('do i have');
+    // 3c. Detect query intent — anchored patterns only.
+    // Previously used .includes() which stole messages that merely contained the
+    // word "what" or "show" as part of a task title (e.g. "what to buy tomorrow"
+    // → misrouted to task query instead of compound capture).
+    // Now uses word-boundary anchored regex patterns that require the query word
+    // to appear as a standalone intent, not embedded in a task description.
+    const lowerText = finalText.toLowerCase().trim();
+    const QUERY_ANCHOR_RE = /^(?:what(?:'s|\s+are|\s+do|\s+is)?\s+(?:my\s+)?(?:tasks?|todos?|due|on|for)|show(?:\s+my)?\s+(?:tasks?|todos?)|tell\s+me\s+(?:my|about\s+my)\s+tasks?|do\s+i\s+have\s+(?:any\s+)?tasks?)/i;
+    const isQuery = QUERY_ANCHOR_RE.test(lowerText);
 
     if (isQuery) {
-      console.log(`[WA] Route: QUERY | userId=${userId} | textLen=${finalText.length}`);
+      log(`[WA] Route: QUERY | userId=${userId} | text="${finalText.substring(0, 80)}"`);
       await handleTaskQuery(userId, finalText, message.phoneNumber);
       return; // Exit early, don't create tasks
     }
 
-    // 4. Get recent conversation context
-    const context = await getConversationContext(userId);
-
-    // 4a. If this is a reply, add the original message to context
-    if (message.replyToMessage) {
-      console.log(`↩️ User replying to: "${message.replyToMessage}"`);
-      context.push({
-        role: 'assistant',
-        content: `[User is replying to: "${message.replyToMessage}"]`,
-      });
-    }
-
-    // Log CREATE routing
-    const focusBefore = getFocus(userId);
-    console.log(
-      `[WA] Route: CREATE | userId=${userId} | ` +
-      `focusBefore=${focusBefore || 'null'} | textLen=${finalText.length}`
-    );
-
-    // 5. Rules-first task creation (no AI in task path)
-    const proposedTasks = createTasksFromTextRules(finalText);
-    let taskConfirmations: string[] = [];
-    let createdTaskIds: string[] = [];
-    if (proposedTasks.length > 0) {
-      const result = await insertTasksWithDedupe({
-        tasks: proposedTasks,
+    // 4. Greeting guard — short-circuit social phrases before compound capture
+    const lowerTrimmedCapture = finalText.trim().toLowerCase();
+    if (CHIT_CHAT_PHRASES.has(lowerTrimmedCapture)) {
+      log(`[WA] Route: CHIT-CHAT | userId=${userId} | text="${lowerTrimmedCapture}"`);
+      const chitChatReply = "Got it! Send me a task or ask 'show my tasks' to see what's on your list.";
+      const sendResult = await sendWhatsAppMessage(message.phoneNumber, chitChatReply);
+      await saveOutboundMessage({
         userId,
-        appUserId: null,
-        allowDuplicateIndices: [],
-        source: TASK_SOURCES.WHATSAPP_TEXT,
-        sourceMessageId: inboundMessageId || null,
+        content: chitChatReply,
+        kind: 'chit_chat',
+        providerMessageId: sendResult?.providerMessageId,
       });
-      if (result.inserted.length > 0) {
-        clearFocus(userId, 'new_task_created');
-        const lastId = result.inserted[result.inserted.length - 1].id;
-        setFocus(userId, lastId);
-        taskConfirmations = formatTaskConfirmations(result.inserted);
-        createdTaskIds = result.inserted.map((t) => t.id);
-      }
-      if (result.duplicates.length > 0) {
-        console.log(`[WA] Dedupe: ${result.duplicates.length} duplicate(s) skipped`);
-      }
+      return;
     }
 
-    // 6. Process with Laya brain (for reply tone, groceries, mood)
-    console.log('🧠 Processing with Laya...');
-    const layaResponse = await processWithLaya(finalText, context);
-    console.log('💬 Laya response:', layaResponse.user_facing_response);
-
-    // 7. Save non-task structured data only (groceries, mood; tasks already inserted above)
-    await saveStructuredData(userId, inboundMessageId || '', {
-      ...layaResponse.structured,
-      tasks: [],
-    });
-
-    // 8. Build final response: task confirmations from rules path, else Laya reply
-    let finalResponse = layaResponse.user_facing_response;
-    if (taskConfirmations.length > 0) {
-      finalResponse = taskConfirmations.join('\n');
-    }
-
-    // Log action result
-    const focusAfter = getFocus(userId);
-    console.log(
-      `[WA] Result: created ${taskConfirmations.length} task confirmations | ` +
-      `focusAfter=${focusAfter || 'null'}`
-    );
-
-    // 9. Send WhatsApp reply and persist outbound message with provider id + task_ids (if any)
-    const sendResult = await sendWhatsAppMessage(message.phoneNumber, finalResponse);
-    const providerMessageId = sendResult?.providerMessageId;
-    if (!providerMessageId && createdTaskIds.length) {
-      console.warn(
-        '[WA][anchor] Missing providerMessageId for create_confirm; outbound message not anchorable.'
-      );
-    }
-    await saveOutboundMessage({
-      userId,
-      content: finalResponse,
-      taskIds: createdTaskIds.length ? createdTaskIds : undefined,
-      kind: createdTaskIds.length ? 'create_confirm' : undefined,
-      providerMessageId: providerMessageId,
-    });
-
-    console.log(
-      `[WA] Outbound: free-form | phone=${message.phoneNumber} | ` +
-      `msgLen=${finalResponse.length}`
-    );
+    // 5. Compound capture — parse all intents (lists + items + tasks) in one pass.
+    //    Falls back to processWithLaya only when nothing was recognised.
+    log(`[WA] Route: COMPOUND-CAPTURE | userId=${userId} | text="${finalText.substring(0, 80)}"`);
+    await handleCompoundCapture(userId, finalText, message.phoneNumber, inboundMessageId, message.replyToMessage ?? null, convState);
   } catch (error) {
-    console.error('❌ Error in processWhatsAppMessage:', error);
+    logError('[WA] processWhatsAppMessage crashed:', error);
     
     // Send error message to user
     try {
@@ -932,17 +1147,17 @@ async function getOrCreateUser(phoneNumber: string): Promise<string | null> {
         .single();
 
       if (error) {
-        console.error('Error creating WhatsApp user:', error);
+        logError(`[WA] getOrCreateUser: failed to insert new whatsapp_users row | phone=${phoneNumber}`, error);
         return null;
       }
 
-      console.log(`📱 Created new unlinked WhatsApp user: ${phoneNumber}`);
+      log(`[WA] getOrCreateUser: new unlinked user created | phone=${phoneNumber}`);
       return null; // Requires linking
     }
 
     // If user exists but NOT linked, return null
     if (!whatsappUser.auth_user_id) {
-      console.log(`⚠️ WhatsApp user ${phoneNumber} requires linking`);
+      warn(`[WA] getOrCreateUser: user exists but NOT linked | phone=${phoneNumber}`);
       return null;
     }
 
@@ -952,11 +1167,29 @@ async function getOrCreateUser(phoneNumber: string): Promise<string | null> {
       .update({ last_active: new Date().toISOString() })
       .eq('id', whatsappUser.id);
 
+    log(`[WA] getOrCreateUser: linked | phone=${phoneNumber} | authUserId=${whatsappUser.auth_user_id}`);
     return whatsappUser.auth_user_id; // ✅ Returns auth.users.id
   } catch (error) {
-    console.error('Error in getOrCreateUser:', error);
+    logError('[WA] getOrCreateUser threw:', error);
     return null;
   }
+}
+
+/**
+ * Resolve the whatsapp_users.id (PK) from an auth_user_id.
+ * messages.user_id FK references whatsapp_users.id, not auth.users.id.
+ */
+async function resolveWhatsappUserId(authUserId: string): Promise<string | null> {
+  const { data, error } = await supabase
+    .from('whatsapp_users')
+    .select('id')
+    .eq('auth_user_id', authUserId)
+    .maybeSingle<{ id: string }>();
+  if (error || !data) {
+    logError(`[WA] resolveWhatsappUserId failed for authUserId=${authUserId}`, error);
+    return null;
+  }
+  return data.id;
 }
 
 /**
@@ -970,10 +1203,15 @@ async function saveInboundMessage(params: {
   rawPayload: any;
 }): Promise<string | null> {
   try {
+    const waUserId = await resolveWhatsappUserId(params.userId);
+    if (!waUserId) {
+      logError(`[WA] saveInboundMessage: could not resolve whatsapp_users.id for authUserId=${params.userId}`);
+      return null;
+    }
     const { data, error } = await supabase
       .from('messages')
       .insert({
-        user_id: params.userId,
+        user_id: waUserId,
         channel: 'whatsapp',
         direction: 'inbound',
         message_type: params.messageType,
@@ -986,13 +1224,13 @@ async function saveInboundMessage(params: {
       .single();
 
     if (error) {
-      console.error('Error saving inbound message:', error);
+      logError('[WA] saveInboundMessage insert failed:', error);
       return null;
     }
 
     return data.id;
   } catch (error) {
-    console.error('Error in saveInboundMessage:', error);
+    logError('[WA] saveInboundMessage threw:', error);
     return null;
   }
 }
@@ -1012,10 +1250,15 @@ async function saveOutboundMessage(params: {
   providerMessageId?: string;
 }): Promise<string | null> {
   try {
+    const waUserId = await resolveWhatsappUserId(params.userId);
+    if (!waUserId) {
+      logError(`[WA] saveOutboundMessage: could not resolve whatsapp_users.id for authUserId=${params.userId}`);
+      return null;
+    }
     const { data, error } = await supabase
       .from('messages')
       .insert({
-        user_id: params.userId,
+        user_id: waUserId,
         channel: 'whatsapp',
         direction: 'outbound',
         message_type: 'text',
@@ -1030,13 +1273,13 @@ async function saveOutboundMessage(params: {
       .single();
 
     if (error) {
-      console.error('Error saving outbound message:', error);
+      logError('[WA] saveOutboundMessage insert failed:', error);
       return null;
     }
 
     return data.id;
   } catch (error) {
-    console.error('Error in saveOutboundMessage:', error);
+    logError('[WA] saveOutboundMessage threw:', error);
     return null;
   }
 }
@@ -1443,6 +1686,58 @@ type PendingEditRow = {
   last_inbound_provider_message_id: string | null;
 };
 
+// ---- Clarification pending action ----
+
+type ClarificationCandidate = { id: string; title: string };
+type ClarificationPayload = {
+  questionType: 'which_task' | 'which_list' | 'unresolved_pronoun';
+  candidates: ClarificationCandidate[];
+  pendingAction?: { type: 'add_item'; listName: string; item: string };
+};
+type PendingClarificationRow = {
+  id: string;
+  auth_user_id: string;
+  app_user_id: string;
+  expires_at: string;
+  payload: ClarificationPayload;
+};
+
+async function getActivePendingClarification(
+  authUserId: string
+): Promise<PendingClarificationRow | null> {
+  const { data } = await supabase
+    .from('wa_pending_actions')
+    .select('id, auth_user_id, app_user_id, expires_at, payload')
+    .eq('auth_user_id', authUserId)
+    .eq('action_type', 'clarification_pending')
+    .gt('expires_at', new Date().toISOString())
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  return data as PendingClarificationRow | null;
+}
+
+async function deletePendingClarification(rowId: string): Promise<void> {
+  await supabase.from('wa_pending_actions').delete().eq('id', rowId);
+}
+
+async function insertPendingClarification(
+  authUserId: string,
+  appUserId: string,
+  payload: ClarificationPayload
+): Promise<void> {
+  const expiresAt = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+  await supabase.from('wa_pending_actions').insert({
+    auth_user_id: authUserId,
+    app_user_id: appUserId,
+    action_type: 'clarification_pending',
+    expires_at: expiresAt,
+    payload,
+  });
+}
+
+// ---- Active pending edit ----
+
 async function getActivePendingEdit(authUserId: string): Promise<PendingEditRow | null> {
   const { data } = await supabase
     .from('wa_pending_actions')
@@ -1843,6 +2138,623 @@ async function isReplyToListPreview(replyToMessageId: string | null): Promise<bo
     .maybeSingle<{ list_ids: string[] | null }>();
   const listIds = data?.list_ids ?? [];
   return listIds.length > 0;
+}
+
+/**
+ * Compound capture handler — replaces the old single-intent handleListCreate + createTasksFromTextRules.
+ *
+ * Parses the full message into compound intents (list creates, list item adds, tasks) in one pass
+ * using the shared parseCompoundIntent pipeline, then executes all writes and sends one combined reply.
+ *
+ * Falls back to processWithLaya (AI) only when no rules-based content was recognised.
+ * When rules-based content exists, the AI path is skipped entirely to avoid legacy grocery side-writes.
+ */
+/** Deferred list disambiguation — collected when >1 list matches in compound capture. */
+interface DeferredListClarification {
+  items: string[];
+  matches: { id: string; name: string }[];
+}
+
+// ---- YES/NO reply patterns for pending confirmations ----
+const YES_RE = /^(yes|y|yep|yeah|yup|confirm|ok|okay|sure|do\s+it|go\s+ahead)\b/i;
+const NO_RE = /^(no|n|nope|cancel|stop|never\s*mind|nevermind|abort|don'?t)\b/i;
+const ADD_RE = /^(add|yes|y|yep)\b/i;
+const NEW_RE = /^(new|create\s+new|no)\b/i;
+
+/**
+ * Execute a confirmed destructive action (task delete or list item remove).
+ * Called when user replies YES to a pending_confirmation prompt.
+ */
+async function executePendingConfirmation(
+  confirmation: PendingConfirmation,
+  appUserId: string,
+  phoneNumber: string,
+  userId: string,
+): Promise<void> {
+  if (confirmation.type === 'task_delete') {
+    const { error } = await supabase
+      .from('tasks')
+      .update({ deleted_at: new Date().toISOString() })
+      .eq('id', confirmation.taskId)
+      .eq('app_user_id', appUserId);
+    if (error) {
+      await sendWhatsAppMessage(phoneNumber, `Couldn't delete "${confirmation.taskTitle}". Try again.`);
+    } else {
+      await sendWhatsAppMessage(phoneNumber, `Deleted "${confirmation.taskTitle}" ✓`);
+      await upsertConversationState(userId, { active_task_id: null, last_task_title: null });
+    }
+  } else if (confirmation.type === 'list_item_remove') {
+    let found: { id: string; list_id: string; text: string } | null = null;
+    if (confirmation.listId) {
+      found = await findListItemByText({ appUserId, listId: confirmation.listId, text: confirmation.item });
+    } else {
+      found = await findListItemByTextAcrossLists(appUserId, confirmation.item);
+    }
+    if (found) {
+      await softDeleteListItem({ itemId: found.id, appUserId });
+      const label = confirmation.listName ? ` from ${confirmation.listName}` : '';
+      await sendWhatsAppMessage(phoneNumber, `Removed "${confirmation.item}"${label} ✓`);
+    } else {
+      await sendWhatsAppMessage(phoneNumber, `Couldn't find "${confirmation.item}" to remove. Try again.`);
+    }
+  }
+}
+
+async function handleCompoundCapture(
+  userId: string,
+  finalText: string,
+  phoneNumber: string,
+  inboundMessageId: string | null,
+  replyToMessageId: string | null,
+  convState: import('@/lib/waConversationState').WaConversationState | null = null
+): Promise<void> {
+  // ── 0a. Pending confirmation handler (YES/NO for destructive actions) ─────
+  if (convState?.pending_confirmation) {
+    const pending = convState.pending_confirmation as PendingConfirmation;
+    const msgLower = finalText.trim();
+
+    if (pending.type === 'translation') {
+      if (YES_RE.test(msgLower)) {
+        // User confirmed translation — re-process translated text
+        await upsertConversationState(userId, { pending_confirmation: null });
+        log(`[WA] translation confirmed | userId=${userId} | translated="${pending.translatedText}"`);
+        await handleCompoundCapture(userId, pending.translatedText, phoneNumber, inboundMessageId, replyToMessageId, convState ? { ...convState, pending_confirmation: null } : null);
+        return;
+      } else if (NO_RE.test(msgLower)) {
+        await upsertConversationState(userId, { pending_confirmation: null });
+        await sendWhatsAppMessage(phoneNumber, "OK, please re-send in English and I'll capture it for you.");
+        return;
+      } else {
+        // User provided a correction — process their corrected text directly
+        await upsertConversationState(userId, { pending_confirmation: null });
+        await handleCompoundCapture(userId, finalText, phoneNumber, inboundMessageId, replyToMessageId, convState ? { ...convState, pending_confirmation: null } : null);
+        return;
+      }
+    }
+
+    if (pending.type === 'list_disambig') {
+      // ADD → add to existing; NEW → create new
+      if (ADD_RE.test(msgLower)) {
+        await upsertConversationState(userId, { pending_confirmation: null });
+        const { data: appUserRow } = await supabase
+          .from('app_users').select('id').eq('auth_user_id', userId).maybeSingle<{ id: string }>();
+        const appUserId = appUserRow?.id;
+        if (appUserId && pending.items.length > 0) {
+          const { inserted } = await insertListItems({
+            appUserId,
+            listId: pending.existingListId,
+            items: pending.items,
+            source: 'whatsapp',
+          });
+          const lines = inserted.map((i) => `• ${i.text}`).join('\n');
+          await sendWhatsAppMessage(phoneNumber, `Added to ${pending.existingListName}:\n${lines}`);
+        } else {
+          await sendWhatsAppMessage(phoneNumber, `Added to ${pending.existingListName} ✓`);
+        }
+        return;
+      }
+      if (NEW_RE.test(msgLower)) {
+        await upsertConversationState(userId, { pending_confirmation: null });
+        // Fall through to normal capture so the create_list runs fresh
+      }
+    } else if (YES_RE.test(msgLower)) {
+      const { data: appUserRow } = await supabase
+        .from('app_users').select('id').eq('auth_user_id', userId).maybeSingle<{ id: string }>();
+      const appUserId = appUserRow?.id;
+      await upsertConversationState(userId, { pending_confirmation: null });
+      if (appUserId) {
+        await executePendingConfirmation(pending, appUserId, phoneNumber, userId);
+      } else {
+        await sendWhatsAppMessage(phoneNumber, "Couldn't find your account. Try linking again.");
+      }
+      return;
+    } else if (NO_RE.test(msgLower)) {
+      await upsertConversationState(userId, { pending_confirmation: null });
+      await sendWhatsAppMessage(phoneNumber, "OK, cancelled.");
+      return;
+    }
+    // Not a YES/NO/ADD/NEW reply — clear pending and continue with normal flow
+    // (user sent a new message instead of responding to the prompt)
+    await upsertConversationState(userId, { pending_confirmation: null });
+  }
+
+  // ── 0b. Unsupported feature detection ────────────────────────────────────
+  const unsupportedResult = detectUnsupportedFeature(finalText);
+  if (unsupportedResult) {
+    log(`[WA] unsupported feature detected: ${unsupportedResult.feature} | userId=${userId}`);
+    await sendWhatsAppMessage(phoneNumber, unsupportedResult.message);
+    await saveOutboundMessage({
+      userId,
+      content: unsupportedResult.message,
+      kind: 'chit_chat',
+    });
+    return;
+  }
+
+  // ── 0c. Non-English detection + translation confirmation ─────────────────
+  // Only check if pending_translation reply (YES) was not handled above.
+  if (looksNonEnglish(finalText)) {
+    log(`[WA] non-English input detected | userId=${userId}`);
+    const translated = await translateToEnglish(finalText);
+    if (translated && translated.toLowerCase() !== finalText.toLowerCase()) {
+      const pending: PendingConfirmation = {
+        type: 'translation',
+        originalText: finalText,
+        translatedText: translated,
+        message: `I translated that as: "${translated}". Is that right? Reply YES to continue or correct me.`,
+      };
+      await upsertConversationState(userId, { pending_confirmation: pending });
+      await sendWhatsAppMessage(phoneNumber, pending.message);
+      return;
+    }
+    // Translation failed or identical — continue with original text
+  }
+
+  // --- Interpret turn (shared classification layer) ---
+  const interpretation = await interpretTurn(finalText, convState, {
+    channel: 'whatsapp',
+    providerMessageId: inboundMessageId ?? undefined,
+  });
+
+  if (interpretation.log.classification) {
+    logClassification(interpretation.log.classification);
+  }
+  logNormalization(interpretation.log.normalizationMeta, interpretation.turnId);
+  logInterpretation(userId, interpretation);
+  logExecutionPlan(userId, interpretation.executionPlan, interpretation.turnId);
+  logSufficiency(userId, interpretation.log.sufficiencyResults, interpretation.turnId);
+
+  // ── Filler: conversational messages with no task/list content ─────────────
+  const isFillerOnly =
+    interpretation.detectedActions.length === 1 &&
+    interpretation.detectedActions[0]?.type === 'filler';
+  if (isFillerOnly) {
+    const fillerReply = "Sounds like a busy one. Let me know if you need to capture anything.";
+    const sendResult = await sendWhatsAppMessage(phoneNumber, fillerReply);
+    await saveOutboundMessage({ userId, content: fillerReply, kind: 'chit_chat', providerMessageId: sendResult?.providerMessageId });
+    return;
+  }
+
+  // ── LLM needs_clarification: ambiguous input before any DB work ──────────
+  const needsClarificationAction = interpretation.detectedActions.find(
+    (a) => a.type === 'needs_clarification'
+  ) as (Extract<(typeof interpretation.detectedActions)[0], { type: 'needs_clarification' }> | undefined);
+  if (needsClarificationAction && interpretation.detectedActions.filter(a => a.type !== 'needs_clarification').length === 0) {
+    void auditTurn({ appUserId: null, interpretation });
+    await sendWhatsAppMessage(phoneNumber, needsClarificationAction.question);
+    return;
+  }
+
+  // ── Handle confirm steps from the execution plan ──────────────────────────
+  // These are destructive actions (delete/remove) that need user confirmation.
+  const confirmSteps = interpretation.executionPlan.filter((s) => s.kind === 'confirm');
+  if (confirmSteps.length > 0) {
+    const { data: appUserRow } = await supabase
+      .from('app_users').select('id').eq('auth_user_id', userId).maybeSingle<{ id: string }>();
+    const appUserId = appUserRow?.id ?? null;
+    void auditTurn({ appUserId, interpretation });
+
+    const firstConfirm = confirmSteps[0]!;
+    const action = firstConfirm.action;
+    let pending: PendingConfirmation | null = null;
+
+    if (action?.type === 'task_follow_up_delete') {
+      pending = {
+        type: 'task_delete',
+        taskId: action.taskId,
+        taskTitle: action.taskTitle ?? 'this task',
+        message: firstConfirm.confirmationMessage ?? `Delete "${action.taskTitle}"? Reply YES to confirm, NO to cancel.`,
+      };
+    } else if (action?.type === 'remove_list_item') {
+      pending = {
+        type: 'list_item_remove',
+        item: action.item,
+        listId: action.listId,
+        listName: action.listName,
+        message: firstConfirm.confirmationMessage ?? `Remove "${action.item}"? Reply YES to confirm.`,
+      };
+    }
+
+    if (pending) {
+      await upsertConversationState(userId, { pending_confirmation: pending });
+      await sendWhatsAppMessage(phoneNumber, pending.message);
+      return;
+    }
+  }
+
+  // If text-level analysis says we need clarification before any DB work, stop here.
+  // (DB-level ambiguity — multiple list matches — is handled below with partial success.)
+  if (interpretation.needsClarification && interpretation.detectedActions.length === 0) {
+    void auditTurn({ appUserId: null, interpretation });
+    const hint = interpretation.clarificationPayload?.hint ?? "Which task or list did you mean?";
+    await sendWhatsAppMessage(phoneNumber, hint);
+    return;
+  }
+
+  // Resolve app_users.id once for all list operations
+  const { data: appUser } = await supabase
+    .from('app_users')
+    .select('id')
+    .eq('auth_user_id', userId)
+    .maybeSingle<{ id: string }>();
+  const appUserId = appUser?.id ?? null;
+
+  // Persist audit log row (fire-and-forget — never blocks the response).
+  void auditTurn({ appUserId, interpretation });
+
+  // Correction detection: if this turn is a follow-up patch, find the most recent
+  // prior turn for this user (within 60s) and mark it as corrected.
+  const hasPatchAction = interpretation.detectedActions.some(
+    (a) => a.type === 'task_follow_up_patch'
+  );
+  if (hasPatchAction && appUserId) {
+    const sixtySecondsAgo = new Date(Date.now() - 60_000).toISOString();
+    void Promise.resolve(
+      supabase
+        .from('ai_turn_log')
+        .select('turn_id')
+        .eq('user_id', appUserId)
+        .neq('turn_id', interpretation.turnId)
+        .is('corrected_turn_id', null)
+        .gt('created_at', sixtySecondsAgo)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle<{ turn_id: string }>()
+        .then(({ data }) => {
+          if (data?.turn_id) {
+            void auditCorrection(data.turn_id, interpretation.turnId);
+          }
+        })
+    ).catch(() => {});
+  }
+
+  // Re-use compound from the interpretation to keep a single parse path.
+  // Fall back to AI if nothing was recognised.
+  const compound = {
+    listActions: interpretation.detectedActions
+      .filter((a) => a.type === 'create_list' || a.type === 'add_list_items')
+      .map((a) =>
+        a.type === 'create_list'
+          ? ({ type: 'create_with_items' as const, listName: a.listName, items: a.items })
+          : ({ type: 'add_to_existing' as const, listName: a.listName ?? '', items: a.items })
+      ),
+    tasks: interpretation.detectedActions
+      .filter((a) => a.type === 'create_task')
+      .map((a) => (a as Extract<typeof a, { type: 'create_task' }>).task),
+    hasContent: interpretation.detectedActions.some(
+      (a) => a.type === 'create_list' || a.type === 'add_list_items' || a.type === 'create_task'
+    ),
+  };
+
+  log(`[WA] compound | userId=${userId} | listActions=${compound.listActions.length} | tasks=${compound.tasks.length}`);
+
+  if (!compound.hasContent) {
+    // Phase 4a gate fix: only invoke the AI fallback when rules AND LLM both found nothing.
+    // If interpretTurn produced any actions (e.g. follow-up patch, remove_list_item, clarify)
+    // those should be handled by the caller's routing, not laya-brain's legacy path.
+    const hasAnyAction = interpretation.detectedActions.length > 0;
+    if (hasAnyAction) {
+      log(`[WA] compound: no capture content but has other actions, skipping AI fallback | userId=${userId} | actions=${interpretation.detectedActions.map(a => a.type).join(',')}`);
+      return;
+    }
+    log(`[WA] compound: no content, falling back to AI | userId=${userId}`);
+    await handleAiFallback(userId, finalText, phoneNumber, inboundMessageId, replyToMessageId, interpretation);
+    return;
+  }
+
+  if (!appUserId) {
+    await sendWhatsAppMessage(phoneNumber, "I couldn't find your account. Try linking again.");
+    return;
+  }
+
+  // --- Execute list actions (partial success: collect deferred instead of returning early) ---
+  const confirmParts: string[] = [];
+  const allListIds: string[] = [];
+  let lastCreatedListId: string | null = null;
+  let lastCreatedListName: string | null = null;
+  let createdListCount = 0;
+  const deferredClarifications: DeferredListClarification[] = [];
+
+  for (const action of compound.listActions) {
+    if (action.type === 'create_with_items') {
+      try {
+        // ── List disambiguation: fuzzy-match existing lists before creating ─
+        const { data: existingLists } = await supabase
+          .from('lists')
+          .select('id, name')
+          .eq('app_user_id', appUserId)
+          .is('deleted_at', null)
+          .ilike('name', `%${action.listName.toLowerCase().replace(/\s+list\s*$/i, '').trim()}%`);
+        const similar = (existingLists ?? []) as { id: string; name: string }[];
+        if (similar.length > 0 && similar[0]!.name.toLowerCase().trim() !== action.listName.toLowerCase().trim()) {
+          // A similar (but not identical) list exists — ask ADD or NEW
+          const closest = similar[0]!;
+          const pending: PendingConfirmation = {
+            type: 'list_disambig',
+            existingListId: closest.id,
+            existingListName: closest.name,
+            newListName: action.listName,
+            items: action.items,
+            message: `You have a list called "${closest.name}". Add to it, or create a new one? Reply ADD or NEW.`,
+          };
+          await upsertConversationState(userId, { pending_confirmation: pending });
+          await sendWhatsAppMessage(phoneNumber, pending.message);
+          return;
+        }
+
+        const { list } = await insertListWithIdempotency({
+          appUserId,
+          name: action.listName,
+          source: 'whatsapp',
+          sourceMessageId: inboundMessageId,
+          importCandidates: null,
+        });
+        allListIds.push(list.id);
+        createdListCount++;
+        lastCreatedListId = list.id;
+        lastCreatedListName = list.name;
+        confirmParts.push(`Created list "${list.name}" ✓`);
+        log(`[WA] compound: created list | listId=${list.id} | name="${list.name}"`);
+
+        if (action.items.length > 0) {
+          const { inserted } = await insertListItems({
+            appUserId,
+            listId: list.id,
+            items: action.items,
+            source: 'whatsapp',
+          });
+          if (inserted.length > 0) {
+            confirmParts.push(
+              `Added to ${list.name}:\n${inserted.map((i) => `• ${i.text}`).join('\n')}`
+            );
+          }
+        } else {
+          // No seed items — open quick-add so the next message goes directly into this list
+          await upsertQuickAdd(userId, appUserId, list.id, list.name, 0);
+        }
+      } catch (err) {
+        logError(`[WA] compound: failed to create list "${action.listName}"`, err);
+      }
+    } else if (action.type === 'add_to_existing') {
+      // Resolve list by name (exact then contains)
+      const { data: lists } = await supabase
+        .from('lists')
+        .select('id, name')
+        .eq('app_user_id', appUserId)
+        .is('deleted_at', null);
+      const all = (lists ?? []) as { id: string; name: string }[];
+      const exact = all.filter(
+        (l) => l.name.toLowerCase().trim() === action.listName.toLowerCase().trim()
+      );
+      const contains = all.filter((l) =>
+        l.name.toLowerCase().includes(action.listName.toLowerCase().trim())
+      );
+      const matches = exact.length > 0 ? exact : contains;
+
+      if (matches.length === 1) {
+        const target = matches[0]!;
+        allListIds.push(target.id);
+        const { inserted } = await insertListItems({
+          appUserId,
+          listId: target.id,
+          items: action.items,
+          source: 'whatsapp',
+        });
+        if (inserted.length > 0) {
+          confirmParts.push(
+            `Added to ${target.name}:\n${inserted.map((i) => `• ${i.text}`).join('\n')}`
+          );
+        }
+        log(`[WA] compound: added ${inserted.length} item(s) to list "${target.name}"`);
+      } else if (matches.length > 1) {
+        // PARTIAL SUCCESS: collect for deferred clarification instead of returning early.
+        // All other clear actions (tasks, unambiguous list ops) will still execute.
+        log(`[WA] compound: ambiguous list name "${action.listName}" (${matches.length} matches) — deferring`);
+        deferredClarifications.push({ items: action.items, matches });
+      } else {
+        confirmParts.push(`Couldn't find a list called "${action.listName}". Say "create list ${action.listName}" to create it.`);
+      }
+    }
+  }
+
+  // Persist last created list to durable state so "add curd too" follow-ups work
+  if (lastCreatedListId && lastCreatedListName) {
+    await upsertConversationState(userId, {
+      active_list_id: lastCreatedListId,
+      last_list_name: lastCreatedListName,
+    });
+  }
+
+  // --- Execute task inserts ---
+  const createdTaskIds: string[] = [];
+  const taskConfirmations: string[] = [];
+
+  if (compound.tasks.length > 0) {
+    // ── Collision detection: check if any task already has the same date+time ─
+    const tasksWithExplicitTime = compound.tasks.filter(
+      (t) => t.due_date && t.due_time && !t.inferred_date && !t.inferred_time
+    );
+    if (tasksWithExplicitTime.length > 0) {
+      for (const newTask of tasksWithExplicitTime) {
+        const { data: existingAtTime } = await supabase
+          .from('tasks')
+          .select('id, title, due_date, due_time')
+          .eq('app_user_id', appUserId)
+          .eq('due_date', newTask.due_date)
+          .eq('due_time', newTask.due_time)
+          .is('deleted_at', null)
+          .is('completed_at', null)
+          .limit(1)
+          .maybeSingle<{ id: string; title: string; due_date: string; due_time: string }>();
+
+        if (existingAtTime) {
+          const msg =
+            `You already have "${existingAtTime.title}" at ${newTask.due_time} on ${newTask.due_date}. ` +
+            `Should I still add "${newTask.title}" at the same time? Reply YES to add or tell me a different time.`;
+          await upsertConversationState(userId, {
+            last_entity_text: newTask.title,
+          });
+          await sendWhatsAppMessage(phoneNumber, msg);
+          return;
+        }
+      }
+    }
+
+    const result = await insertTasksWithDedupe({
+      tasks: compound.tasks,
+      userId,
+      appUserId,
+      allowDuplicateIndices: [],
+      source: TASK_SOURCES.WHATSAPP_TEXT,
+      sourceMessageId: inboundMessageId || null,
+    });
+    if (result.inserted.length > 0) {
+      const lastInserted = result.inserted[result.inserted.length - 1]!;
+      const lastId = lastInserted.id;
+      const lastTitle = lastInserted.title ?? '';
+      // Persist durable conversation state so follow-up messages ("make it Friday") work
+      await upsertConversationState(userId, {
+        active_task_id: lastId,
+        last_task_title: lastTitle,
+        last_entity_text: lastTitle,
+      });
+      const lines = formatTaskConfirmations(result.inserted);
+      taskConfirmations.push(...lines);
+      createdTaskIds.push(...result.inserted.map((t) => t.id));
+    }
+    if (result.duplicates.length > 0) {
+      log(`[WA] compound: ${result.duplicates.length} task duplicate(s) skipped`);
+    }
+  }
+
+  if (taskConfirmations.length > 0) {
+    confirmParts.push(taskConfirmations.join('\n'));
+  }
+
+  // --- Handle first deferred clarification (partial success) ---
+  // If some actions were ambiguous, ask about the first one after confirming clear ones.
+  if (deferredClarifications.length > 0) {
+    const first = deferredClarifications[0]!;
+    const expiresAt = new Date(Date.now() + ADD_TO_LIST_CHOOSE_EXPIRY_MS).toISOString();
+    await supabase.from('wa_pending_actions').insert({
+      auth_user_id: userId,
+      app_user_id: appUserId,
+      action_type: 'add_to_list_choose',
+      task_id: null,
+      expires_at: expiresAt,
+      payload: {
+        listIds: first.matches.map((m) => m.id),
+        listNames: first.matches.map((m) => m.name),
+        items: first.items,
+      },
+    });
+    const clarificationQ = `Which list?\n${first.matches.map((n, i) => `${i + 1}. ${n.name}`).join('\n')}`;
+    // Combine clear confirmations with the clarification question in one reply
+    const combinedResponse =
+      confirmParts.length > 0
+        ? confirmParts.join('\n\n') + '\n\n' + clarificationQ
+        : clarificationQ;
+    const sendResult = await sendWhatsAppMessage(phoneNumber, combinedResponse);
+    await saveOutboundMessage({
+      userId,
+      content: combinedResponse,
+      taskIds: createdTaskIds.length > 0 ? createdTaskIds : undefined,
+      listIds: allListIds.length > 0 ? allListIds : undefined,
+      kind: 'compound_confirm',
+      providerMessageId: sendResult?.providerMessageId,
+    });
+    log(`[WA] compound partial-success | tasks=${createdTaskIds.length} | deferred=${deferredClarifications.length}`);
+    return;
+  }
+
+  // --- Build and send combined reply ---
+  const finalResponse = confirmParts.join('\n\n').trim() || "Got it!";
+
+  const sendResult = await sendWhatsAppMessage(phoneNumber, finalResponse);
+  const providerMessageId = sendResult?.providerMessageId;
+
+  await saveOutboundMessage({
+    userId,
+    content: finalResponse,
+    taskIds: createdTaskIds.length > 0 ? createdTaskIds : undefined,
+    listIds: allListIds.length > 0 ? allListIds : undefined,
+    kind: createdTaskIds.length > 0 && allListIds.length > 0
+      ? 'compound_confirm'
+      : createdTaskIds.length > 0
+        ? 'create_confirm'
+        : 'list_create_confirm',
+    providerMessageId,
+  });
+
+  log(
+    `[WA] compound done | userId=${userId} | lists=${createdListCount} | ` +
+    `listAdds=${compound.listActions.filter((a) => a.type === 'add_to_existing').length} | ` +
+    `tasks=${createdTaskIds.length}`
+  );
+}
+
+/**
+ * AI fallback: called only when parseCompoundIntent found no rules-based content.
+ * Preserves existing processWithLaya + saveStructuredData behaviour (mood, legacy groceries).
+ * Wraps the LLM-generated reply through safeResponseGuard before sending.
+ */
+async function handleAiFallback(
+  userId: string,
+  finalText: string,
+  phoneNumber: string,
+  inboundMessageId: string | null,
+  replyToMessageId: string | null,
+  interpretation?: import('@/lib/turnInterpreter').TurnInterpretation | null
+): Promise<void> {
+  const context = await getConversationContext(userId);
+  if (replyToMessageId) {
+    context.push({
+      role: 'assistant',
+      content: `[User is replying to: "${replyToMessageId}"]`,
+    });
+  }
+
+  const layaResponse = await processWithLaya(finalText, context);
+  log(`[WA] AI fallback response | userId=${userId} | reply="${layaResponse.user_facing_response.substring(0, 80)}"`);
+
+  // Guard the LLM-generated reply before sending
+  const safeResult = safeResponseGuard(layaResponse.user_facing_response, {
+    userText: finalText,
+    interpretation: interpretation ?? null,
+  });
+  logResponseSafety(userId, safeResult, interpretation?.turnId);
+
+  await saveStructuredData(userId, inboundMessageId || '', {
+    ...layaResponse.structured,
+    tasks: [], // tasks must always go through insertTasksWithDedupe
+  });
+
+  const sendResult = await sendWhatsAppMessage(phoneNumber, safeResult.reply);
+  await saveOutboundMessage({
+    userId,
+    content: safeResult.reply,
+    providerMessageId: sendResult?.providerMessageId,
+  });
 }
 
 /**
@@ -2388,10 +3300,10 @@ async function handleTaskQuery(
   phoneNumber: string
 ): Promise<void> {
   try {
-    console.log(`🔍 Handling task query: "${queryText}"`);
+    log(`[WA] handleTaskQuery | userId=${userId} | query="${queryText.substring(0, 80)}"`);
     
-    // Clear focus when processing query
-    clearFocus(userId, 'query_processed');
+    // Clear active-object state when processing a query (queries are context resets)
+    await clearConversationState(userId);
 
     const filters = extractQueryFilters(queryText);
     const categoryFilter = filters.category || null;
@@ -2455,6 +3367,7 @@ async function handleTaskQuery(
     });
 
     if (viewResult.identityResolved === false) {
+      logError(`[WA] handleTaskQuery: identity not resolved (no app_users row?) | userId=${userId} | query="${queryText.substring(0, 60)}"`);
       await sendWhatsAppMessage(
         phoneNumber,
         "I couldn't find your tasks yet. Try linking your account again."
@@ -2511,466 +3424,5 @@ async function handleTaskQuery(
       phoneNumber,
       "I couldn't retrieve your tasks - had trouble with that query."
     );
-  }
-}
-
-/**
- * Handle edit requests using conversational focus
- */
-async function handleTaskEdit(
-  userId: string,
-  editText: string,
-  phoneNumber: string
-): Promise<void> {
-  try {
-    console.log(`✏️ Handling task edit: "${editText}"`);
-
-    // SAFETY ASSERTION: Get current focus task
-    const focusTaskId = getFocus(userId);
-    
-    if (!focusTaskId) {
-      console.log(
-        `[WA] Safety: NO FOCUS for edit | userId=${userId} | ` +
-        `action=request_clarification`
-      );
-      
-      // No focus set - DO NOT GUESS, ask for clarification
-      const { data: recentTasks, error: queryError } = await supabase
-        .from('tasks')
-        .select('id, title, due_date, due_time')
-        .eq('user_id', userId)
-        .eq('source', 'whatsapp')
-        .eq('is_done', false)
-        .order('created_at', { ascending: false })
-        .limit(3);
-
-      if (queryError) {
-        console.error('Error querying tasks:', queryError);
-        throw queryError;
-      }
-
-      if (!recentTasks || recentTasks.length === 0) {
-        console.log(
-          `[WA] Safety: NO TASKS for clarification | userId=${userId} | ` +
-          `action=send_directional_message`
-        );
-        await sendWhatsAppMessage(
-          phoneNumber,
-          "I'm not sure which task you want to change. Try saying the task name, or add a new task."
-        );
-        return;
-      }
-
-      // Show up to 3 recent tasks for clarification (DO NOT GUESS)
-      console.log(
-        `[WA] Safety: CLARIFICATION sent | userId=${userId} | ` +
-        `taskCount=${recentTasks.length}`
-      );
-      let clarificationMessage = "Which task do you want to update?\n";
-      
-      recentTasks.forEach((task, index) => {
-        clarificationMessage += `${index + 1}) ${task.title}\n`;
-      });
-      
-      clarificationMessage += "\nReply with a number.";
-      
-      await sendWhatsAppMessage(phoneNumber, clarificationMessage);
-      return;
-    }
-    
-    console.log(
-      `[WA] Safety: FOCUS exists | userId=${userId} | ` +
-      `focusTaskId=${focusTaskId}`
-    );
-
-    // Fetch the focused task
-    const { data: taskToEdit, error: fetchError } = await supabase
-      .from('tasks')
-      .select('id, title, due_date, due_time')
-      .eq('id', focusTaskId)
-      .eq('user_id', userId)
-      .single();
-
-    if (fetchError || !taskToEdit) {
-      console.error('Focus task not found:', focusTaskId);
-      clearFocus(userId, 'focus_task_not_found');
-      await sendWhatsAppMessage(
-        phoneNumber,
-        "I couldn't update anything just now. You can say the task name or add a new one."
-      );
-      return;
-    }
-    const lowerText = editText.toLowerCase();
-
-    // Parse edit request
-    let newDate = taskToEdit.due_date;
-    let newTime = taskToEdit.due_time;
-    let editType = '';
-
-    // Date change detection
-    if (lowerText.includes('tomorrow')) {
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      newDate = tomorrow.toISOString().split('T')[0];
-      editType = 'date';
-    } else if (lowerText.includes('today')) {
-      newDate = new Date().toISOString().split('T')[0];
-      editType = 'date';
-    } else if (lowerText.match(/\b(\d{1,2})\/(\d{1,2})\b/)) {
-      // MM/DD format
-      const match = lowerText.match(/\b(\d{1,2})\/(\d{1,2})\b/);
-      const month = match![1].padStart(2, '0');
-      const day = match![2].padStart(2, '0');
-      const year = new Date().getFullYear();
-      newDate = `${year}-${month}-${day}`;
-      editType = 'date';
-    }
-
-    // Time change detection
-    const timeMatch = lowerText.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i);
-    if (timeMatch) {
-      let hours = parseInt(timeMatch[1]);
-      const minutes = timeMatch[2] || '00';
-      const meridiem = timeMatch[3].toLowerCase();
-
-      if (meridiem === 'pm' && hours < 12) hours += 12;
-      if (meridiem === 'am' && hours === 12) hours = 0;
-
-      newTime = `${hours.toString().padStart(2, '0')}:${minutes}`;
-      editType = editType ? 'date and time' : 'time';
-    } else if (lowerText.match(/\b(\d{1,2}):(\d{2})\b/)) {
-      // 24-hour format
-      const match = lowerText.match(/\b(\d{1,2}):(\d{2})\b/);
-      const hours = match![1].padStart(2, '0');
-      const minutes = match![2];
-      newTime = `${hours}:${minutes}`;
-      editType = editType ? 'date and time' : 'time';
-    }
-
-    // Check if any changes were detected
-    if (newDate === taskToEdit.due_date && newTime === taskToEdit.due_time) {
-      await sendWhatsAppMessage(
-        phoneNumber,
-        "I couldn't update anything just now. You can say the task name or add a new one."
-      );
-      return;
-    }
-
-    const normalizedNewTime = toHHMM(newTime) ?? newTime;
-    const dateChanged = taskToEdit.due_date !== newDate;
-    const timeChanged =
-      (toHHMM(taskToEdit.due_time) ?? taskToEdit.due_time ?? '') !==
-      (normalizedNewTime ?? '');
-
-    // [R3] Use per-user timezone for schedule recompute, fallback to DEFAULT_TZ.
-    const tz = await getUserTimezoneByAuthUserId(userId);
-    const dueAtISO = computeDueAtFromLocal(tz, newDate, normalizedNewTime);
-    const remindAtISO = computeRemindAtFromDueAt(dueAtISO);
-
-    const updatePayload: Record<string, unknown> = {
-      due_date: newDate,
-      due_time: normalizedNewTime,
-      due_at: dueAtISO,
-      remind_at: remindAtISO,
-      ...(dateChanged && { inferred_date: false }),
-      ...(timeChanged && { inferred_time: false }),
-    };
-
-    const { error: updateError } = await supabase
-      .from('tasks')
-      .update(updatePayload)
-      .eq('id', taskToEdit.id);
-
-    if (updateError) {
-      console.error('Error updating task:', updateError);
-      throw updateError;
-    }
-
-    // Build confirmation message
-    let confirmation = `Done - I've updated "${taskToEdit.title}" to `;
-
-    const isToday = newDate === new Date().toISOString().split('T')[0];
-    const isTomorrow = (() => {
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      return newDate === tomorrow.toISOString().split('T')[0];
-    })();
-
-    if (isToday && newTime) {
-      confirmation += `today at ${newTime}`;
-    } else if (isToday) {
-      confirmation += 'today';
-    } else if (isTomorrow && newTime) {
-      confirmation += `tomorrow at ${newTime}`;
-    } else if (isTomorrow) {
-      confirmation += 'tomorrow';
-    } else if (newDate && newTime) {
-      confirmation += `${newDate} at ${newTime}`;
-    } else if (newDate) {
-      confirmation += newDate;
-    } else if (newTime) {
-      confirmation += newTime;
-    }
-
-    confirmation += '.';
-
-    // Maintain focus on edited task
-    setFocus(userId, taskToEdit.id);
-
-    await sendWhatsAppMessage(phoneNumber, confirmation);
-    console.log(
-      `[WA] Result: updated taskId=${taskToEdit.id} | ` +
-      `editType=${editType} | focusAfter=${taskToEdit.id}`
-    );
-  } catch (error) {
-    console.error('Error in handleTaskEdit:', error);
-    await sendWhatsAppMessage(
-      phoneNumber,
-      "I couldn't update anything just now. You can say the task name or add a new one."
-    );
-  }
-}
-
-/**
- * Handle user's response to edit clarification
- * Returns true if a pending edit was found and applied, false otherwise
- */
-async function handleEditClarification(
-  userId: string,
-  taskNumber: number,
-  phoneNumber: string
-): Promise<boolean> {
-  try {
-    // Check if the last outbound message was a clarification
-    const { data: recentMessages, error: messageError } = await supabase
-      .from('whatsapp_messages')
-      .select('content, created_at')
-      .eq('user_id', userId)
-      .eq('direction', 'outbound')
-      .order('created_at', { ascending: false })
-      .limit(1);
-
-    if (messageError || !recentMessages || recentMessages.length === 0) {
-      return false;
-    }
-
-    const lastMessage = recentMessages[0];
-    
-    // Check if the last message was a clarification (contains "Which task do you want to update?")
-    if (!lastMessage.content.includes('Which task do you want to update?')) {
-      return false;
-    }
-
-    // Check if the clarification is recent (within 2 hours, matching focus TTL)
-    const twoHoursAgo = new Date();
-    twoHoursAgo.setHours(twoHoursAgo.getHours() - 2);
-    if (new Date(lastMessage.created_at) < twoHoursAgo) {
-      await sendWhatsAppMessage(phoneNumber, "That was a while ago. What would you like to change now?");
-      clearFocus(userId, 'clarification_expired');
-      return true; // Handled the expired clarification
-    }
-
-    console.log(`🔢 Found recent clarification, applying to task #${taskNumber}`);
-
-    // Get recent tasks (not time-limited, just show latest open tasks)
-    const { data: recentTasks, error: queryError } = await supabase
-      .from('tasks')
-      .select('id, title, due_date, due_time')
-      .eq('user_id', userId)
-      .eq('source', 'whatsapp')
-      .eq('is_done', false)
-      .order('created_at', { ascending: false })
-      .limit(3);
-
-    if (queryError || !recentTasks || recentTasks.length === 0) {
-      await sendWhatsAppMessage(phoneNumber, "I couldn't update anything just now. You can say the task name or add a new one.");
-      return true; // Still return true because we handled the clarification
-    }
-
-    // Validate task number
-    if (taskNumber < 1 || taskNumber > recentTasks.length) {
-      await sendWhatsAppMessage(
-        phoneNumber,
-        `Please reply with a number between 1 and ${recentTasks.length}.`
-      );
-      return true;
-    }
-
-    const selectedTask = recentTasks[taskNumber - 1];
-
-    // Get the most recent inbound message before the clarification to extract edit intent
-    const { data: userMessages, error: userMessageError } = await supabase
-      .from('whatsapp_messages')
-      .select('content')
-      .eq('user_id', userId)
-      .eq('direction', 'inbound')
-      .lt('created_at', lastMessage.created_at)
-      .order('created_at', { ascending: false })
-      .limit(1);
-
-    if (userMessageError || !userMessages || userMessages.length === 0) {
-      await sendWhatsAppMessage(phoneNumber, "I couldn't update anything just now. You can say the task name or add a new one.");
-      return true;
-    }
-
-    const originalEditText = userMessages[0].content.toLowerCase();
-
-    // Parse the original edit request
-    let newDate = selectedTask.due_date;
-    let newTime = selectedTask.due_time;
-
-    // Date change detection
-    if (originalEditText.includes('tomorrow')) {
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      newDate = tomorrow.toISOString().split('T')[0];
-    } else if (originalEditText.includes('today')) {
-      newDate = new Date().toISOString().split('T')[0];
-    } else if (originalEditText.match(/\b(\d{1,2})\/(\d{1,2})\b/)) {
-      const match = originalEditText.match(/\b(\d{1,2})\/(\d{1,2})\b/);
-      const month = match![1].padStart(2, '0');
-      const day = match![2].padStart(2, '0');
-      const year = new Date().getFullYear();
-      newDate = `${year}-${month}-${day}`;
-    }
-
-    // Time change detection
-    const timeMatch = originalEditText.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i);
-    if (timeMatch) {
-      let hours = parseInt(timeMatch[1]);
-      const minutes = timeMatch[2] || '00';
-      const meridiem = timeMatch[3].toLowerCase();
-
-      if (meridiem === 'pm' && hours < 12) hours += 12;
-      if (meridiem === 'am' && hours === 12) hours = 0;
-
-      newTime = `${hours.toString().padStart(2, '0')}:${minutes}`;
-    } else if (originalEditText.match(/\b(\d{1,2}):(\d{2})\b/)) {
-      const match = originalEditText.match(/\b(\d{1,2}):(\d{2})\b/);
-      const hours = match![1].padStart(2, '0');
-      const minutes = match![2];
-      newTime = `${hours}:${minutes}`;
-    }
-
-    const normalizedNewTime = toHHMM(newTime) ?? newTime;
-    const dateChanged = selectedTask.due_date !== newDate;
-    const timeChanged =
-      (toHHMM(selectedTask.due_time) ?? selectedTask.due_time ?? '') !==
-      (normalizedNewTime ?? '');
-
-    // [R3] Use per-user timezone for schedule recompute, fallback to DEFAULT_TZ.
-    const tz = await getUserTimezoneByAuthUserId(userId);
-    const dueAtISO = computeDueAtFromLocal(tz, newDate, normalizedNewTime);
-    const remindAtISO = computeRemindAtFromDueAt(dueAtISO);
-
-    const updatePayload: Record<string, unknown> = {
-      due_date: newDate,
-      due_time: normalizedNewTime,
-      due_at: dueAtISO,
-      remind_at: remindAtISO,
-      ...(dateChanged && { inferred_date: false }),
-      ...(timeChanged && { inferred_time: false }),
-    };
-
-    const { error: updateError } = await supabase
-      .from('tasks')
-      .update(updatePayload)
-      .eq('id', selectedTask.id);
-
-    if (updateError) {
-      console.error('Error updating task:', updateError);
-      throw updateError;
-    }
-
-    // Build confirmation message
-    let confirmation = `Done - I've updated "${selectedTask.title}" to `;
-
-    const isToday = newDate === new Date().toISOString().split('T')[0];
-    const isTomorrow = (() => {
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      return newDate === tomorrow.toISOString().split('T')[0];
-    })();
-
-    if (isToday && newTime) {
-      confirmation += `today at ${newTime}`;
-    } else if (isToday) {
-      confirmation += 'today';
-    } else if (isTomorrow && newTime) {
-      confirmation += `tomorrow at ${newTime}`;
-    } else if (isTomorrow) {
-      confirmation += 'tomorrow';
-    } else if (newDate && newTime) {
-      confirmation += `${newDate} at ${newTime}`;
-    } else if (newDate) {
-      confirmation += newDate;
-    } else if (newTime) {
-      confirmation += newTime;
-    }
-
-    confirmation += '.';
-
-    // Set focus to the updated task
-    setFocus(userId, selectedTask.id);
-
-    await sendWhatsAppMessage(phoneNumber, confirmation);
-    console.log(`✅ Updated task "${selectedTask.title}" via clarification`);
-    return true;
-  } catch (error) {
-    console.error('Error in handleEditClarification:', error);
-    await sendWhatsAppMessage(
-      phoneNumber,
-      "I couldn't update anything just now. You can say the task name or add a new one."
-    );
-    return true; // Return true to indicate we handled the clarification attempt
-  }
-}
-
-/**
- * Check if there's a pending clarification and cancel it
- * Returns true if a clarification was found and cancelled, false otherwise
- */
-async function checkAndClearPendingClarification(
-  userId: string,
-  phoneNumber: string
-): Promise<boolean> {
-  try {
-    // Check if the last outbound message was a clarification
-    const { data: recentMessages, error: messageError } = await supabase
-      .from('whatsapp_messages')
-      .select('content, created_at')
-      .eq('user_id', userId)
-      .eq('direction', 'outbound')
-      .order('created_at', { ascending: false })
-      .limit(1);
-
-    if (messageError || !recentMessages || recentMessages.length === 0) {
-      return false;
-    }
-
-    const lastMessage = recentMessages[0];
-    
-    // Check if the last message was a clarification (contains "Which task do you want to update?")
-    if (!lastMessage.content.includes('Which task do you want to update?')) {
-      return false;
-    }
-
-    // Check if the clarification is recent (within 2 hours, matching focus TTL)
-    const twoHoursAgo = new Date();
-    twoHoursAgo.setHours(twoHoursAgo.getHours() - 2);
-    if (new Date(lastMessage.created_at) < twoHoursAgo) {
-      return false; // Clarification is too old, let message continue to normal flow
-    }
-
-    console.log('❌ Cancelling pending clarification');
-    
-    // Clear focus and send cancellation message
-    clearFocus(userId, 'user_cancelled');
-    await sendWhatsAppMessage(phoneNumber, "Okay, I didn't make any changes.");
-    
-    return true;
-  } catch (error) {
-    console.error('Error in checkAndClearPendingClarification:', error);
-    return false;
   }
 }

@@ -68,7 +68,16 @@ const CATEGORY_KEYWORDS: Record<string, string[]> = {
 };
 
 /**
+ * Escape a string for safe use inside a RegExp literal.
+ */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
  * Detect category from task text. First keyword match wins.
+ * Uses word-boundary matching so partial substrings (e.g. "eat" inside
+ * "create", "call" inside "called") do not produce false positives.
  * Returns DEFAULT_CATEGORY ('Tasks') if no match.
  * Used by task rules parser (mobile parity) and brain dump parser.
  */
@@ -76,7 +85,8 @@ export function detectCategory(text: string): string {
   const lowerText = text.toLowerCase();
   for (const [category, keywords] of Object.entries(CATEGORY_KEYWORDS)) {
     for (const keyword of keywords) {
-      if (lowerText.includes(keyword)) return category;
+      const pattern = new RegExp('\\b' + escapeRegExp(keyword) + '\\b');
+      if (pattern.test(lowerText)) return category;
     }
   }
   return DEFAULT_CATEGORY;

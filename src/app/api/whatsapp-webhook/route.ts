@@ -12,6 +12,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { processWhatsAppMessage } from '@/lib/whatsapp-processor';
 import type { IncomingMessage } from '@/lib/whatsapp-processor';
+import { log, warn, error as logError } from '@/lib/logger';
 
 function extractGupshupSenderPhone(payload: Record<string, unknown>): string | null {
   if (typeof payload.source === 'string' && payload.source) {
@@ -84,7 +85,7 @@ function normalizeMetaV3Message(
 ): IncomingMessage | null {
   const from = message.from;
   if (typeof from !== 'string' || !from) {
-    console.error('[whatsapp-webhook] Meta v3 message without from');
+    logError('[whatsapp-webhook] Meta v3 message without from');
     return null;
   }
 
@@ -99,7 +100,7 @@ function normalizeMetaV3Message(
     const cid = ctx.id;
     if (typeof cid === 'string' && cid) {
       replyToMessage = cid;
-      console.log(`↩️ Reply to provider message ID (Meta v3 context.id): ${cid}`);
+      log(`↩️ Reply to provider message ID (Meta v3 context.id): ${cid}`);
     }
   }
 
@@ -110,7 +111,7 @@ function normalizeMetaV3Message(
 
   const mt = typeof message.type === 'string' ? message.type : null;
   if (!mt) {
-    console.log('[whatsapp-webhook] Meta v3 message without type');
+    log('[whatsapp-webhook] Meta v3 message without type');
     return null;
   }
 
@@ -119,9 +120,10 @@ function normalizeMetaV3Message(
     const body =
       isRecord(textObj) && typeof textObj.body === 'string' ? textObj.body : null;
     if (body == null) {
-      console.log('[whatsapp-webhook] Ignored: Meta v3 text without text.body');
+      log('[whatsapp-webhook] Ignored: Meta v3 text without text.body');
       return null;
     }
+    log(`[whatsapp-webhook] Meta v3 text | from=${phoneNumber} | msgId=${messageId} | body="${body.substring(0, 60)}"`);
     return {
       phoneNumber,
       messageId,
@@ -138,11 +140,10 @@ function normalizeMetaV3Message(
     const audio = isRecord(message.audio) ? message.audio : null;
     const url = metaMediaDirectUrl(audio);
     if (!url) {
-      console.log(
-        '[whatsapp-webhook] Meta v3 audio without direct URL (id-only media); skipped — no Graph media fetch'
-      );
+      log('[whatsapp-webhook] Meta v3 audio without direct URL (id-only media); skipped — no Graph media fetch');
       return null;
     }
+    log(`[whatsapp-webhook] Meta v3 audio | from=${phoneNumber} | msgId=${messageId}`);
     return {
       phoneNumber,
       messageId,
@@ -159,14 +160,13 @@ function normalizeMetaV3Message(
     const image = isRecord(message.image) ? message.image : null;
     const url = metaMediaDirectUrl(image);
     if (!url) {
-      console.log(
-        '[whatsapp-webhook] Meta v3 image without direct URL (id-only media); skipped — no Graph media fetch'
-      );
+      log('[whatsapp-webhook] Meta v3 image without direct URL (id-only media); skipped — no Graph media fetch');
       return null;
     }
     const mime = image && typeof image.mime_type === 'string' ? image.mime_type : undefined;
     const caption =
       image && typeof image.caption === 'string' ? image.caption : null;
+    log(`[whatsapp-webhook] Meta v3 image | from=${phoneNumber} | mime=${mime}`);
     return {
       phoneNumber,
       messageId,
@@ -185,13 +185,12 @@ function normalizeMetaV3Message(
     const doc = isRecord(message.document) ? message.document : null;
     const url = metaMediaDirectUrl(doc);
     if (!url) {
-      console.log(
-        '[whatsapp-webhook] Meta v3 document without direct URL (id-only media); skipped — no Graph media fetch'
-      );
+      log('[whatsapp-webhook] Meta v3 document without direct URL (id-only media); skipped — no Graph media fetch');
       return null;
     }
     const mime = doc && typeof doc.mime_type === 'string' ? doc.mime_type : undefined;
     const caption = doc && typeof doc.caption === 'string' ? doc.caption : null;
+    log(`[whatsapp-webhook] Meta v3 document | from=${phoneNumber} | mime=${mime}`);
     return {
       phoneNumber,
       messageId,
@@ -210,9 +209,10 @@ function normalizeMetaV3Message(
     const btn = isRecord(message.button) ? message.button : null;
     const text = btn && typeof btn.text === 'string' ? btn.text : null;
     if (text == null) {
-      console.log('[whatsapp-webhook] Ignored: Meta v3 button without button.text');
+      log('[whatsapp-webhook] Ignored: Meta v3 button without button.text');
       return null;
     }
+    log(`[whatsapp-webhook] Meta v3 button | from=${phoneNumber} | text="${text}"`);
     return {
       phoneNumber,
       messageId,
@@ -235,11 +235,10 @@ function normalizeMetaV3Message(
       else if (isRecord(lr) && typeof lr.title === 'string') text = lr.title;
     }
     if (text == null) {
-      console.log(
-        '[whatsapp-webhook] Ignored: Meta v3 interactive without button_reply / list_reply title'
-      );
+      log('[whatsapp-webhook] Ignored: Meta v3 interactive without button_reply / list_reply title');
       return null;
     }
+    log(`[whatsapp-webhook] Meta v3 interactive | from=${phoneNumber} | text="${text}"`);
     return {
       phoneNumber,
       messageId,
@@ -252,7 +251,7 @@ function normalizeMetaV3Message(
     };
   }
 
-  console.log(`[whatsapp-webhook] Unsupported Meta v3 message type: ${mt}`);
+  log(`[whatsapp-webhook] Unsupported Meta v3 message type: ${mt}`);
   return null;
 }
 
@@ -277,18 +276,18 @@ function normalizeGupshupNative(
 
   const messageType = typeof payload.type === 'string' ? payload.type : null;
 
-  if (!phoneNumber) {
-    console.error('[whatsapp-webhook] No phone number in Gupshup payload');
+      if (!phoneNumber) {
+    logError('[whatsapp-webhook] No phone number in Gupshup payload');
     return null;
   }
 
   if (!messageType) {
-    console.log('[whatsapp-webhook] Ignored: missing payload.type');
+    log('[whatsapp-webhook] Ignored: missing payload.type');
     return null;
-  }
+      }
 
-  let content: string | null = null;
-  let audioId: string | null = null;
+      let content: string | null = null;
+      let audioId: string | null = null;
   let replyToMessage: string | undefined;
 
   const ctx = payload.context;
@@ -296,7 +295,7 @@ function normalizeGupshupNative(
     const gsId = (ctx as { gsId?: string }).gsId;
     if (typeof gsId === 'string') {
       replyToMessage = gsId;
-      console.log(`↩️ Reply to provider message ID: ${gsId}`);
+      log(`↩️ Reply to provider message ID: ${gsId}`);
     }
   }
 
@@ -308,7 +307,7 @@ function normalizeGupshupNative(
     const text =
       innerObj && typeof innerObj.text === 'string' ? innerObj.text : null;
     if (text == null) {
-      console.log('[whatsapp-webhook] Ignored: text message without payload.payload.text');
+      log('[whatsapp-webhook] Ignored: text message without payload.payload.text');
       return null;
     }
     content = text;
@@ -316,7 +315,7 @@ function normalizeGupshupNative(
   } else if (messageType === 'audio') {
     const url = innerObj && typeof innerObj.url === 'string' ? innerObj.url : null;
     if (!url) {
-      console.log('[whatsapp-webhook] Ignored: audio without payload.payload.url');
+      log('[whatsapp-webhook] Ignored: audio without payload.payload.url');
       return null;
     }
     audioId = url;
@@ -328,9 +327,7 @@ function normalizeGupshupNative(
   ) {
     const url = innerObj && typeof innerObj.url === 'string' ? innerObj.url : null;
     if (!url) {
-      console.log(
-        `[whatsapp-webhook] Ignored: ${messageType} without payload.payload.url`
-      );
+      log(`[whatsapp-webhook] Ignored: ${messageType} without payload.payload.url`);
       return null;
     }
     mediaUrl = url;
@@ -340,19 +337,19 @@ function normalizeGupshupNative(
         : undefined;
     resolvedMessageType =
       messageType === 'file' || messageType === 'document' ? 'document' : 'image';
-  } else {
-    console.log(`[whatsapp-webhook] Unsupported Gupshup message type: ${messageType}`);
+      } else {
+    log(`[whatsapp-webhook] Unsupported Gupshup message type: ${messageType}`);
     return null;
-  }
+      }
 
   return {
-    phoneNumber,
-    messageId,
+        phoneNumber,
+        messageId,
     messageType: resolvedMessageType,
-    content,
-    audioId,
-    timestamp,
-    rawPayload: payload,
+        content,
+        audioId,
+        timestamp,
+        rawPayload: payload,
     replyToMessage,
     mediaUrl,
     mediaMimeType,
@@ -381,22 +378,23 @@ export async function POST(request: NextRequest) {
     try {
       body = await request.json();
     } catch {
-      console.error('[whatsapp-webhook] Invalid JSON body');
+      logError('[whatsapp-webhook] Invalid JSON body');
       return NextResponse.json({ status: 'ok' }, { status: 200 });
     }
 
     if (!body || typeof body !== 'object') {
-      console.log('[whatsapp-webhook] Ignored: body is not an object');
+      log('[whatsapp-webhook] Ignored: body is not an object');
       return NextResponse.json({ status: 'ignored' }, { status: 200 });
     }
 
     const b = body as Record<string, unknown>;
-    console.log('📥 WhatsApp Webhook (Gupshup):', JSON.stringify(body, null, 2));
+    log('📥 WhatsApp Webhook (Gupshup):', JSON.stringify(body, null, 2));
 
     const isGupshupNative =
       b.type === 'message' && b.payload != null && typeof b.payload === 'object';
 
     if (isGupshupNative) {
+      log('[whatsapp-webhook] Shape: Gupshup native');
       const incoming = normalizeGupshupNative(b);
       if (incoming) {
         enqueueProcess(incoming);
@@ -407,11 +405,10 @@ export async function POST(request: NextRequest) {
     if (Array.isArray(b.entry)) {
       const pairs = collectMetaV3UserMessages(b);
       if (pairs.length === 0) {
-        console.log(
-          '[whatsapp-webhook] Ignored: Meta v3 envelope with no user messages (e.g. statuses-only or empty)'
-        );
+        log('[whatsapp-webhook] Ignored: Meta v3 envelope with no user messages (e.g. statuses-only or empty)');
         return NextResponse.json({ status: 'ignored' }, { status: 200 });
       }
+      log(`[whatsapp-webhook] Shape: Meta v3 | user messages=${pairs.length}`);
       for (const { value, message } of pairs) {
         const incoming = normalizeMetaV3Message(value, message);
         if (incoming) {
@@ -421,12 +418,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ status: 'ok' }, { status: 200 });
     }
 
-    console.log(
-      '[whatsapp-webhook] Ignored: not Gupshup native (type/message) or Meta v3 (entry)'
-    );
+    log('[whatsapp-webhook] Ignored: not Gupshup native (type/message) or Meta v3 (entry)');
     return NextResponse.json({ status: 'ignored' }, { status: 200 });
-  } catch (error) {
-    console.error('❌ Webhook error:', error);
+  } catch (err) {
+    logError('[whatsapp-webhook] Unhandled error:', err);
     return NextResponse.json(
       { status: 'error', message: 'Internal error' },
       { status: 200 }

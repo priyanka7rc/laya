@@ -31,14 +31,6 @@ export async function GET(
       return NextResponse.json({ error: 'App user not found' }, { status: 404 });
     }
 
-    const { data: list } = await supabaseAdmin!
-      .from('lists')
-      .select('id')
-      .eq('id', listId)
-      .eq('app_user_id', appUser.id)
-      .is('deleted_at', null)
-      .maybeSingle();
-
     const { data: listRow } = await supabaseAdmin!
       .from('lists')
       .select('id, name')
@@ -83,6 +75,8 @@ export async function GET(
       items,
       doneCount,
       totalCount,
+    }, {
+      headers: { 'Cache-Control': 'private, max-age=0, stale-while-revalidate=30' },
     });
   } catch (e) {
     console.error(LOG, e);

@@ -1,42 +1,172 @@
 @import "tailwindcss";
 
+/* Class-based dark mode — must match .dark on <html> */
 @variant dark (&:where(.dark, .dark *));
 
-/* Laya design system - calm premium consumer-app */
-:root {
-  --background: #F7F4EE;
-  --foreground: #24302B;
-  --card: #FFFDF9;
-  --card-foreground: #24302B;
-  --border: #E6E0D6;
-  --primary: #8FA68E;
-  --primary-foreground: #ffffff;
-  --secondary: #6D746F;
-  --secondary-foreground: #FFFDF9;
-  --muted: #E6E0D6;
-  --muted-foreground: #6D746F;
-  --accent: #C8836A;
-  --accent-foreground: #ffffff;
-  --destructive: #C46B6B;
-  --destructive-foreground: #ffffff;
-  --success: #6C8C6B;
-  --warning: #D3A35C;
-  --ring: #8FA68E;
+/* -------------------------------------------------------------------------- */
+/* Shared tokens — theme-independent, apply in all modes                      */
+/* -------------------------------------------------------------------------- */
+html {
+  /* Geometry */
   --radius: 16px;
   --radius-sm: 12px;
   --radius-md: 14px;
   --radius-lg: 20px;
-  --shadow-sm: 0 1px 2px rgba(36, 48, 43, 0.05);
-  --shadow: 0 2px 8px rgba(36, 48, 43, 0.06);
-  --shadow-md: 0 4px 12px rgba(36, 48, 43, 0.08);
+
+  /* Typography scale */
   --text-h1: 32px;
   --text-h2: 24px;
   --text-h3: 20px;
   --text-body: 16px;
   --text-small: 14px;
   --text-meta: 13px;
+
+  /* Semantic aliases — resolve against whichever theme class is active */
+  --background: var(--bg-primary);
+  --foreground: var(--text-primary);
+  --card: var(--bg-elevated);
+  --card-foreground: var(--text-primary);
+  --border: var(--border-soft);
+  --primary: var(--accent-primary);
+  --primary-foreground: var(--accent-primary-text);
+  --secondary: var(--text-secondary);
+  --secondary-foreground: var(--text-primary);
+  --muted: var(--bg-muted);
+  --muted-foreground: var(--text-secondary);
+  --accent: var(--accent-warm);
+  --accent-foreground: var(--accent-warm-text);
+  --destructive: var(--danger-soft);
+  --destructive-foreground: var(--danger-text);
+  --success: var(--success-text);
+  --warning: var(--warning-text);
+  --ring: var(--focus-ring);
 }
 
+/* -------------------------------------------------------------------------- */
+/* Canonical palette (LIGHT) — html.light                                     */
+/* -------------------------------------------------------------------------- */
+html.light {
+  color-scheme: light;
+
+  --bg-primary: #f5f1ea;
+  --bg-surface: #fbf8f3;
+  --bg-elevated: #ffffff;
+  --bg-muted: #eee7de;
+  --bg-soft: #e7e2d8;
+
+  --text-primary: #2f2b27;
+  --text-secondary: #6b655e;
+  --text-tertiary: #857b70;
+  --text-inverse: #1b1815;
+
+  --border-soft: #d6cdc1;
+  --border-strong: #c6baac;
+  --divider-quiet: #ddd4c8;
+
+  --accent-primary: #9caf9a;
+  --accent-primary-hover: #a9bca6;
+  --accent-primary-active: #899c86;
+  --accent-primary-text: #172018;
+  --accent-soft: #d8e3d5;
+  --accent-soft-text: #334235;
+  --accent-warm: #c9a997;
+  --accent-warm-soft: #e7d3c8;
+  --accent-warm-text: #5a433a;
+
+  --success-soft: #d6e4d3;
+  --success-text: #3f503f;
+  --success-border: #b8c8b4;
+
+  --warning-soft: #e5d7c0;
+  --warning-text: #614f3d;
+  --warning-border: #ccb89a;
+
+  --danger-soft: #e4d0cb;
+  --danger-text: #664b46;
+  --danger-border: #ccb2ac;
+
+  --info-soft: #d9dfe5;
+  --info-text: #4b5561;
+  --info-border: #bec7d0;
+
+  --focus-ring: #9caf9a;
+  --selection-bg: #d8e3d5;
+  --selection-text: #2f3d31;
+
+  --hover-overlay: rgba(0, 0, 0, 0.03);
+  --pressed-overlay: rgba(0, 0, 0, 0.06);
+  --scrim: rgba(40, 34, 30, 0.12);
+  --modal-overlay: rgba(40, 34, 30, 0.50);
+
+  --shadow-sm: 0 1px 2px rgba(47, 43, 39, 0.05);
+  --shadow: 0 2px 8px rgba(47, 43, 39, 0.06);
+  --shadow-md: 0 4px 12px rgba(47, 43, 39, 0.08);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Canonical palette (DARK) — html.dark                                           */
+/* -------------------------------------------------------------------------- */
+html.dark {
+  color-scheme: dark;
+
+  --bg-primary: #221e1b;
+  --bg-surface: #2c2723;
+  --bg-elevated: #35302b;
+  --bg-muted: #3b352f;
+  --bg-soft: #454039;
+
+  --text-primary: #f0e7dc;
+  --text-secondary: #c9bdb0;
+  --text-tertiary: #a99d91;
+  --text-inverse: #1b1815;
+
+  --border-soft: #534c45;
+  --border-strong: #655d55;
+  --divider-quiet: #47413b;
+
+  --accent-primary: #9bb596;
+  --accent-primary-hover: #a8c1a3;
+  --accent-primary-active: #88a283;
+  --accent-primary-text: #182018;
+  --accent-soft: #4e5c4d;
+  --accent-soft-text: #d7e4d4;
+  --accent-warm: #b69a87;
+  --accent-warm-soft: #5b4a41;
+  --accent-warm-text: #e6d5c8;
+
+  --success-soft: #465745;
+  --success-text: #dce9da;
+  --success-border: #60715e;
+
+  --warning-soft: #625343;
+  --warning-text: #f0ddc6;
+  --warning-border: #7a6856;
+
+  --danger-soft: #694d48;
+  --danger-text: #f1dcd8;
+  --danger-border: #83635d;
+
+  --info-soft: #474c52;
+  --info-text: #dce1e8;
+  --info-border: #5f656c;
+
+  --focus-ring: #a9c1a4;
+  --selection-bg: #4f5e4e;
+  --selection-text: #e3ede1;
+
+  --hover-overlay: rgba(255, 255, 255, 0.04);
+  --pressed-overlay: rgba(0, 0, 0, 0.1);
+  --scrim: rgba(17, 14, 12, 0.55);
+  --modal-overlay: rgba(17, 14, 12, 0.65);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Tailwind v4 @theme — maps utilities to CSS variables                         */
+/* -------------------------------------------------------------------------- */
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -53,9 +183,26 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
-  --color-success: var(--success);
-  --color-warning: var(--warning);
+  --color-success: var(--success-soft);
+  --color-success-foreground: var(--success-text);
+  --color-success-border: var(--success-border);
+  --color-warning: var(--warning-soft);
+  --color-warning-foreground: var(--warning-text);
+  --color-warning-border: var(--warning-border);
+  --color-danger: var(--danger-soft);
+  --color-danger-foreground: var(--danger-text);
+  --color-danger-border: var(--danger-border);
+  --color-info: var(--info-soft);
+  --color-info-foreground: var(--info-text);
+  --color-info-border: var(--info-border);
+  --color-elevated: var(--bg-elevated);
+  --color-surface: var(--bg-surface);
+  --color-soft: var(--bg-soft);
   --color-ring: var(--ring);
+  --color-scrim: var(--scrim);
+  --color-overlay: var(--modal-overlay);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-soft-foreground: var(--accent-soft-text);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
   --radius-sm: var(--radius-sm);
@@ -64,45 +211,15 @@
   --radius-xl: var(--radius);
 }
 
-.dark {
-  --background: #0f1312;
-  --foreground: #f5f3f0;
-  --card: #1a1f1d;
-  --card-foreground: #f5f3f0;
-  --border: #2d3532;
-  --primary: #8FA68E;
-  --primary-foreground: #ffffff;
-  --secondary: #6D746F;
-  --secondary-foreground: #f5f3f0;
-  --muted: #2d3532;
-  --muted-foreground: #9ca59f;
-  --accent: #C8836A;
-  --accent-foreground: #ffffff;
-  --destructive: #C46B6B;
-  --destructive-foreground: #ffffff;
-  --success: #6C8C6B;
-  --warning: #D3A35C;
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
-  --shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.25);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not(.light) {
-    --background: #0f1312;
-    --foreground: #f5f3f0;
-    --card: #1a1f1d;
-    --card-foreground: #f5f3f0;
-    --border: #2d3532;
-    --muted: #2d3532;
-    --muted-foreground: #9ca59f;
-  }
-}
-
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans), system-ui, sans-serif;
+}
+
+::selection {
+  background: var(--selection-bg);
+  color: var(--selection-text);
 }
 
 /* Hide Next.js dev indicator */
@@ -205,8 +322,7 @@ button {
     padding-left: max(0px, env(safe-area-inset-left));
     padding-right: max(0px, env(safe-area-inset-right));
   }
-  
-  /* Safe area for bottom navigation */
+
   .safe-area-bottom {
     padding-bottom: max(0px, env(safe-area-inset-bottom));
   }

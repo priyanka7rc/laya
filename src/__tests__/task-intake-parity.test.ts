@@ -5,7 +5,7 @@
  * Ensures: non-null schedule, inference flags, idempotency, Brain Dump vs OCR path consistency.
  */
 
-import { segmentToProposedTask, textToProposedTasksFromSegments } from '@/lib/task_intake';
+import { segmentToProposedTask, textToProposedTasksFromSegments, stripIntentPrefixes } from '@/lib/task_intake';
 import { splitBrainDump } from '@/lib/brainDumpParser';
 import { ocrTextToProposedTasks } from '@/lib/ocrCandidates';
 
@@ -80,6 +80,38 @@ function runTests() {
       keyboardProposed[0].inferred_time === direct.inferred_time,
     'keyboard single-segment matches segmentToProposedTask (canonical create API parity)'
   );
+  console.log('   OK');
+
+  // --- Intent prefix stripping ---
+
+  console.log('8. stripIntentPrefixes: "remind me to buy groceries" → "buy groceries"...');
+  assert(stripIntentPrefixes('remind me to buy groceries') === 'buy groceries', 'remind me to stripped');
+  assert(stripIntentPrefixes('Remind me to buy groceries') === 'buy groceries', 'Remind me to stripped (case-insensitive)');
+  console.log('   OK');
+
+  console.log('9. stripIntentPrefixes: other prefixes...');
+  assert(stripIntentPrefixes('remember to call the dentist') === 'call the dentist', 'remember to stripped');
+  assert(stripIntentPrefixes("don't forget to pay the bill") === 'pay the bill', "don't forget to stripped");
+  assert(stripIntentPrefixes('please schedule a meeting') === 'schedule a meeting', 'please stripped');
+  assert(stripIntentPrefixes('can you book a table') === 'book a table', 'can you stripped');
+  assert(stripIntentPrefixes('could you send the report') === 'send the report', 'could you stripped');
+  console.log('   OK');
+
+  console.log('10. stripIntentPrefixes: no prefix → unchanged...');
+  assert(stripIntentPrefixes('buy groceries') === 'buy groceries', 'plain text unchanged');
+  assert(stripIntentPrefixes('call mom') === 'call mom', 'call mom unchanged');
+  console.log('   OK');
+
+  console.log('11. segmentToProposedTask: "Remind me to buy groceries today" → title "Buy groceries" with due date set...');
+  const t11 = segmentToProposedTask('Remind me to buy groceries today');
+  assert(t11.title === 'Buy groceries', `Expected "Buy groceries", got "${t11.title}"`);
+  assert(t11.due_date != null && t11.due_date.length === 10, 'due date still resolved from original text');
+  console.log('   OK');
+
+  console.log('12. segmentToProposedTask: "remember to call mom tomorrow at 3pm" → title "Call mom"...');
+  const t12 = segmentToProposedTask('remember to call mom tomorrow at 3pm');
+  assert(t12.title === 'Call mom', `Expected "Call mom", got "${t12.title}"`);
+  assert(t12.due_time === '15:00', `Expected due_time 15:00, got "${t12.due_time}"`);
   console.log('   OK');
 
   console.log('\nAll parity checks passed.');

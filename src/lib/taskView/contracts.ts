@@ -48,6 +48,9 @@ export interface TaskViewTask {
   category: string | null;
   parseConfidence: number | null;
   createdAt: string;
+  notes?: string | null;
+  inferred_date?: boolean;
+  inferred_time?: boolean;
   /** Present when row has is_done; derived from status otherwise for UI parity. */
   is_done?: boolean;
   /** Legacy display; derived from dueAt when not on row (YYYY-MM-DD). */

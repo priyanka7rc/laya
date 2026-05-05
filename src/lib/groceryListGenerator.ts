@@ -785,7 +785,7 @@ Return JSON with "lines" array containing EXACTLY ${chunk.length} items:
 
   try {
     const response = await getOpenAI().chat.completions.create({
-      model: 'gpt-4o-mini-2024-07-18',
+      model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
       messages: [
         {
           role: 'system',

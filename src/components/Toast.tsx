@@ -16,12 +16,12 @@ export default function Toast({ message, onClose, duration = 3000 }: ToastProps)
 
   return (
     <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[60] animate-slide-down">
-      <div className="bg-gradient-to-r from-purple-600 to-blue-600 text-white px-6 py-4 rounded-lg shadow-2xl flex items-center gap-3 max-w-md">
+      <div className="bg-success border border-success-border text-success-foreground px-6 py-4 rounded-xl shadow-md flex items-center gap-3 max-w-md">
         <span className="text-2xl">✨</span>
         <p className="font-medium">{message}</p>
         <button
           onClick={onClose}
-          className="ml-2 text-white/80 hover:text-white transition-colors"
+          className="ml-2 opacity-70 hover:opacity-100 transition-opacity"
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"

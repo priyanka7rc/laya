@@ -1,12 +1,14 @@
 /**
  * Rules-first brain dump parser. Fast, deterministic, no AI.
- * - splitBrainDump: split on delimiters; cautious "and" split
+ * - splitBrainDump: split on delimiters; sentence-boundary split; cautious "and" split
  * - parseOneSegmentWithRules: extract date/time, apply required defaults, return one task with flags
  * - detectListIntent: detect "add X to [my] list of Y" patterns, returns { item, listName } or null
+ * - detectColonListIntent: detect "X: items" colon-list patterns, returns { listName, items } or null
  * Category inference uses shared guessCategory from @/lib/categories.
  */
 
 import { guessCategory } from '@/lib/categories';
+import { nudgePastTime } from '@/lib/taskRulesParser';
 
 const DEFAULT_TIME = '20:00';
 
@@ -21,16 +23,51 @@ export interface ParsedTaskWithFlags {
 }
 
 /**
+ * Split text into coarse sentence-level segments (no comma/semicolon splitting).
+ *
+ * Used by parseCompoundIntent as the outer loop so that create-list patterns and
+ * colon-list patterns are tried on the full sentence before the inner comma-split pass.
+ *
+ * Splits on:
+ *   - Sentence boundaries (period/!/? followed by whitespace + capital letter)
+ *   - Newlines
+ *   - Bullet / numbered list markers
+ */
+export function splitIntoSentences(text: string): string[] {
+  const trimmed = text.trim();
+  if (!trimmed.length) return [];
+
+  const withSentenceBoundaries = trimmed.replace(/([.!?])\s+(?=[A-Z])/g, '$1\n');
+
+  return withSentenceBoundaries
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/^[\s]*[•\-*]\s+/gm, '\n')
+    .replace(/^[\s]*\d+[.)]\s+/gm, '\n')
+    .split(/\n+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+/**
  * Split brain dump text into segments.
- * - Split on: commas, semicolons, newlines, bullets (•, -, *, numbered)
- * - Cautiously split on " and " only when both sides are substantial (>= 10 chars) to avoid breaking "call mom and dad"
+ * - Phase 0: split on sentence boundaries (`. ` or `! ` or `? ` before a capital letter)
+ *   so prose like "Pay rent. Buy milk. Call dentist." → 3 segments.
+ *   Trade-off: rare abbreviations like "Dr. Singh" are split; acceptable for task messages.
+ * - Phase 1: split on commas, semicolons, newlines, bullets (•, -, *, numbered)
+ * - Phase 2: cautiously split on " and " only when both sides are substantial (>= 10 chars)
+ *   to avoid breaking "call mom and dad"
  */
 export function splitBrainDump(text: string): string[] {
   const trimmed = text.trim();
   if (!trimmed.length) return [];
 
-  // Normalize bullets and newlines to a single split token, then split
-  const normalized = trimmed
+  // Phase 0: replace sentence boundaries (punctuation + space + capital) with newline.
+  // Only fires when a period/exclamation/question is followed by whitespace and an uppercase letter.
+  const withSentenceBoundaries = trimmed.replace(/([.!?])\s+(?=[A-Z])/g, '$1\n');
+
+  // Phase 1: normalize bullets and newlines, then split on comma/semicolon/newline
+  const normalized = withSentenceBoundaries
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
     .replace(/^[\s]*[•\-*]\s+/gm, '\n')
@@ -41,9 +78,18 @@ export function splitBrainDump(text: string): string[] {
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
 
-  // Cautiously split on " and " only when both parts are substantial
+  // Phase 2: cautiously split on " and " only when both parts are substantial.
+  // Exception: protect "add/put [items] to/on/in [target] and [other clause]" — split only
+  // at the "and" AFTER the preposition phrase, leaving the list-item conjunction intact.
   const result: string[] = [];
   for (const seg of segments) {
+    // Protected split for "add/put ... to/on/in ... and ..." patterns
+    const listConjSplit = splitAddToListConjunction(seg);
+    if (listConjSplit) {
+      result.push(...listConjSplit);
+      continue;
+    }
+
     const parts = seg.split(/\s+and\s+/i);
     if (parts.length === 1) {
       result.push(seg);
@@ -62,27 +108,92 @@ export function splitBrainDump(text: string): string[] {
 }
 
 /**
+ * For "add/put [items with 'and'] to/on/in [target] and [other clause]" patterns,
+ * split at the LAST " and " — which separates the list action from the following clause —
+ * leaving the item-conjunction ("glue sticks and chart paper") intact.
+ *
+ * Returns null when the pattern does not apply (falls back to general Phase 2 split).
+ *
+ * Example:
+ *   "Add glue sticks and chart paper to school supplies and move PTM to next Monday"
+ *   → ["Add glue sticks and chart paper to school supplies", "move PTM to next Monday"]
+ */
+function splitAddToListConjunction(seg: string): string[] | null {
+  // Only applies to segments starting with "add" or "put"
+  if (!/^(?:add|put)\s+/i.test(seg)) return null;
+
+  const lastAndIdx = seg.lastIndexOf(' and ');
+  if (lastAndIdx === -1) return null;
+
+  const beforeLastAnd = seg.slice(0, lastAndIdx);
+  const afterLastAnd = seg.slice(lastAndIdx + 5); // ' and ' is 5 chars
+
+  // The part BEFORE the last "and" must contain a preposition — confirms "add X to Y and [other]"
+  if (!/\s(?:to|on|in)\s/i.test(beforeLastAnd)) return null;
+
+  // Both parts must be non-trivial
+  if (beforeLastAnd.trim().length < 5 || afterLastAnd.trim().length < 5) return null;
+
+  return [beforeLastAnd.trim(), afterLastAnd.trim()];
+}
+
+/**
+/**
+ * Verbs that indicate the task is to *arrange* something for a future event.
+ * "Book restaurant for Friday" → booking context → due_date = today, keep "for Friday"
+ * "Submit report for Friday" → deadline context → due_date = Friday, strip "for Friday"
+ */
+const BOOKING_VERB_RE = /^(book|reserve|schedule|organis|organiz|arrange|plan|get|buy|order|pick\s+up|purchase|rent)\b/i;
+
+/** Preposition + weekday combination indicating a booking event date (not a task deadline). */
+const FOR_WEEKDAY_RE = /\bfor\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i;
+
+/**
  * Parse one segment into a single task. due_date and due_time are always set (required defaults).
  * Returns flags indicating when defaults were applied.
+ *
+ * Booking context rule: when the segment starts with a booking verb AND contains
+ * "for [weekday]", the task is to *arrange* something for that future date.
+ * In this case due_date stays today, and "for [day]" is preserved in the title.
  */
 export function parseOneSegmentWithRules(segment: string): ParsedTaskWithFlags {
   const timeInfo = extractTimeFromText(segment);
-  const dateInfo = extractDateFromText(segment);
+  const trimmed = segment.trim();
+
+  // Detect booking context BEFORE date extraction so we can override due_date
+  const isBooking = BOOKING_VERB_RE.test(trimmed) && FOR_WEEKDAY_RE.test(trimmed);
+
+  // For booking tasks, force due_date = today regardless of the "for [day]" phrase
+  const dateInfo = isBooking ? null : extractDateFromText(segment);
 
   const due_date = dateInfo ?? getTodayDate();
-  const due_time = timeInfo ?? DEFAULT_TIME;
+  const rawTime = timeInfo ?? DEFAULT_TIME;
   const dueDateWasDefaulted = dateInfo == null;
   const dueTimeWasDefaulted = timeInfo == null;
+  // Nudge past times forward so we never schedule a defaulted time in the past on today
+  const due_time = nudgePastTime(due_date, rawTime, dueTimeWasDefaulted);
 
-  let cleanTitle = segment
-    .replace(/\b(at|@)\s*\d{1,2}:?\d{0,2}\s*(am|pm)?\b/gi, '')
-    .replace(/\btomorrow\b/gi, '')
-    .replace(/\btoday\b/gi, '')
-    .replace(/\bmonday|tuesday|wednesday|thursday|friday|saturday|sunday\b/gi, '')
-    .replace(/\bnext week\b/gi, '')
-    .replace(/\bby\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  let cleanTitle: string;
+  if (isBooking) {
+    // Booking: only strip time expressions; preserve "for [day]" in title
+    cleanTitle = trimmed
+      .replace(/\b(at|@)\s*\d{1,2}:?\d{0,2}\s*(am|pm)?\b/gi, '')
+      .replace(/\btoday\b/gi, '')
+      .replace(/\s+/g, ' ')
+      .replace(/[.!?]+$/, '')
+      .trim();
+  } else {
+    cleanTitle = trimmed
+      .replace(/\b(at|@)\s*\d{1,2}:?\d{0,2}\s*(am|pm)?\b/gi, '')
+      .replace(/\btomorrow\b/gi, '')
+      .replace(/\btoday\b/gi, '')
+      .replace(/\bmonday|tuesday|wednesday|thursday|friday|saturday|sunday\b/gi, '')
+      .replace(/\bnext week\b/gi, '')
+      .replace(/\bby\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi, '')
+      .replace(/\s+/g, ' ')
+      .replace(/[.!?]+$/, '')
+      .trim();
+  }
 
   if (cleanTitle.length > 0) {
     cleanTitle = cleanTitle.charAt(0).toUpperCase() + cleanTitle.slice(1);
@@ -152,11 +263,131 @@ export function detectListIntent(segment: string): ListIntent | null {
     return { item: toTitleCase(m3[1].trim()), listName: toTitleCase(m3[2].trim()) };
   }
 
+  // Pattern 4: add/put X to/on/in [the/my] Y  (bare list name, no "list" suffix)
+  // "Add sunscreen to shopping", "Put milk on groceries"
+  // Guard: target must be ≤ 3 words and not contain task/time context words
+  const p4 = /^(?:add|put)\s+(.+?)\s+(?:to|on|in)\s+(?:the\s+|my\s+)?(.+?)$/i;
+  const m4 = s.match(p4);
+  if (m4) {
+    const item = m4[1].trim();
+    const target = m4[2].trim();
+    const wordCount = target.split(/\s+/).length;
+    const isTaskContext = /\b(schedule|calendar|plan|agenda|reminder|task|note|call|meeting|today|tomorrow|tonight|morning|afternoon|evening|weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(target);
+    if (wordCount <= 3 && !isTaskContext) {
+      return { item: toTitleCase(item), listName: toTitleCase(target) };
+    }
+  }
+
   return null;
 }
 
 function toTitleCase(str: string): string {
   return str.replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// Words that, when found in the LHS of "X: items", indicate the text is a task context
+// preamble rather than a list name (e.g. "I need to do these today: ...").
+const TASK_PREAMBLE_WORDS = new Set([
+  'need', 'want', 'have', 'these', 'following', 'also', 'this', 'some', 'few',
+]);
+
+/**
+ * Split the RHS of a colon-list into individual items.
+ * Handles commas and " and " connectors.
+ */
+function splitColonItems(rhs: string): string[] {
+  const normalized = rhs.replace(/\s+and\s+/gi, ',');
+  return normalized
+    .split(/,+/)
+    .map((s) => s.trim().replace(/[.,;:!?]+$/, ''))
+    .filter((s) => s.length > 0)
+    .slice(0, 10);
+}
+
+export interface ColonListIntent {
+  listName: string;
+  items: string[];
+}
+
+/**
+ * Detect colon-list patterns in a single segment.
+ *
+ * Accepts:
+ *   "Groceries: milk, eggs, bread"          → { listName: "Groceries", items: [...] }
+ *   "list for house supplies: garbage bags"  → { listName: "house supplies", items: [...] }
+ *   "packing list for Goa: sunscreen, hats"  → { listName: "Goa", items: [...] }
+ *   "Need a list for X: items"              → { listName: "X", items: [...] }
+ *   "Make a packing list for Goa: items"    → { listName: "Packing List For Goa", items: [...] }
+ *
+ * Rejects (LHS too long / contains task-preamble words):
+ *   "I need to do these today: call the bank, buy fruits"  → null
+ *   "Here is what I have to get: milk"                     → null
+ *
+ * Returns null when no colon is present or LHS does not look like a list name.
+ */
+export function detectColonListIntent(segment: string): ColonListIntent | null {
+  const colonIdx = segment.indexOf(':');
+  if (colonIdx === -1) return null;
+
+  const lhs = segment.slice(0, colonIdx).trim();
+  const rhs = segment.slice(colonIdx + 1).trim();
+
+  if (!lhs || !rhs) return null;
+
+  // Always accept if LHS explicitly contains "list"
+  const lhsLower = lhs.toLowerCase();
+  if (lhsLower.includes('list')) {
+    // Extract the meaningful name part.
+    // "list for X" or "packing list for X" → X
+    const forMatch = lhsLower.match(/list\s+(?:for|called|named)\s+(.+)$/i);
+    if (forMatch) {
+      const rawName = lhs.slice(lhs.toLowerCase().lastIndexOf(forMatch[1])).trim();
+      const items = splitColonItems(rhs);
+      return items.length > 0 ? { listName: toTitleCase(rawName), items } : null;
+    }
+    // Just "list: items" → use the whole LHS as name (strip leading "a/the")
+    const cleanedName = lhs.replace(/^(?:a|the|an|my)\s+/i, '').trim() || lhs;
+    const items = splitColonItems(rhs);
+    return items.length > 0 ? { listName: toTitleCase(cleanedName), items } : null;
+  }
+
+  // Accept short noun phrases (≤ 3 words) that don't contain task-preamble words
+  const words = lhs.split(/\s+/);
+  if (words.length > 3) return null;
+  const hasPreambleWord = words.some((w) => TASK_PREAMBLE_WORDS.has(w.toLowerCase()));
+  if (hasPreambleWord) return null;
+
+  const items = splitColonItems(rhs);
+  return items.length > 0 ? { listName: toTitleCase(lhs), items } : null;
+}
+
+/**
+ * Detect preamble-colon task dumps:
+ *   "Need to do these today: call the bank, buy fruits, clean the study"
+ *   "Here are my tasks: pay rent, book dentist, call mom"
+ *
+ * Returns the RHS items as individual task segment strings, or null.
+ * Only fires when the LHS contains TASK_PREAMBLE_WORDS so it does not conflict
+ * with detectColonListIntent (which already handles legit list patterns).
+ */
+export function detectPreambleColonTaskDump(segment: string): string[] | null {
+  const colonIdx = segment.indexOf(':');
+  if (colonIdx === -1) return null;
+
+  const lhs = segment.slice(0, colonIdx).trim();
+  const rhs = segment.slice(colonIdx + 1).trim();
+  if (!lhs || !rhs) return null;
+
+  const lhsWords = lhs.split(/\s+/);
+  const hasPreambleWord = lhsWords.some((w) => TASK_PREAMBLE_WORDS.has(w.toLowerCase()));
+  if (!hasPreambleWord) return null;
+
+  // Split RHS on comma (keep "and" intact inside segments — task names may use it)
+  const items = rhs
+    .split(/,+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  return items.length > 0 ? items : null;
 }
 
 // --- Date/time/category helpers (no AI) ---

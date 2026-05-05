@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useToastContext, Toast as ToastType, ToastAction } from '@/context/ToastContext';
+import { useToastContext, Toast as ToastType } from '@/context/ToastContext';
 
 export function ToastViewport() {
   const { toasts, removeToast } = useToastContext();
@@ -12,7 +12,6 @@ export function ToastViewport() {
     setMounted(true);
   }, []);
 
-  // Don't render anything on server or before mount
   if (!mounted) return null;
 
   return createPortal(
@@ -27,47 +26,48 @@ export function ToastViewport() {
 
 function ToastItem({ toast, onClose }: { toast: ToastType; onClose: () => void }) {
   useEffect(() => {
-    // Ensure cleanup if component unmounts
     return () => {};
   }, []);
 
-  const variantStyles = {
-    success: 'bg-green-900/90 border-green-700 text-green-100',
-    error: 'bg-red-900/90 border-red-700 text-red-100',
-    info: 'bg-blue-900/90 border-blue-700 text-blue-100',
+  const variantStyles: Record<string, string> = {
+    success: 'bg-success border-success-border text-success-foreground',
+    error:   'bg-danger  border-danger-border  text-danger-foreground',
+    warning: 'bg-warning border-warning-border text-warning-foreground',
+    info:    'bg-info    border-info-border    text-info-foreground',
   };
 
-  const icons = {
+  const icons: Record<string, string> = {
     success: '✓',
-    error: '✕',
-    info: 'ℹ',
+    error:   '✕',
+    warning: '!',
+    info:    'ℹ',
   };
+
+  const variant = toast.variant || 'info';
 
   return (
     <div
       className={`
         pointer-events-auto
         min-w-[280px] md:min-w-[320px]
-        rounded-lg border backdrop-blur-sm
-        p-4 shadow-lg
+        rounded-xl border backdrop-blur-sm
+        p-4 shadow-md
         animate-slide-in-right
-        ${variantStyles[toast.variant || 'info']}
+        ${variantStyles[variant] ?? variantStyles.info}
       `}
       role="alert"
     >
       <div className="flex items-start gap-3">
-        {/* Icon */}
-        <div className="flex-shrink-0 w-5 h-5 rounded-full bg-white/20 flex items-center justify-center text-sm font-bold">
-          {icons[toast.variant || 'info']}
+        <div className="flex-shrink-0 w-5 h-5 rounded-full bg-current/10 flex items-center justify-center text-sm font-bold">
+          {icons[variant] ?? icons.info}
         </div>
 
-        {/* Content */}
         <div className="flex-1 min-w-0">
           <p className="font-semibold text-sm md:text-base leading-tight">
             {toast.title}
           </p>
           {toast.description && (
-            <p className="text-xs md:text-sm opacity-90 mt-1 leading-snug">
+            <p className="text-xs md:text-sm opacity-80 mt-1 leading-snug">
               {toast.description}
             </p>
           )}
@@ -84,10 +84,9 @@ function ToastItem({ toast, onClose }: { toast: ToastType; onClose: () => void }
           )}
         </div>
 
-        {/* Close Button */}
         <button
           onClick={onClose}
-          className="flex-shrink-0 opacity-70 hover:opacity-100 transition-opacity p-1 -mr-1 -mt-1"
+          className="flex-shrink-0 opacity-60 hover:opacity-100 transition-opacity p-1 -mr-1 -mt-1"
           aria-label="Close"
         >
           <svg

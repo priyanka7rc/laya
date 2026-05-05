@@ -46,6 +46,57 @@ export interface EditPatch {
   category?: string;
 }
 
+// ---- Day-of-week resolution ----
+
+const DAYS: Record<string, number> = {
+  sunday: 0, sun: 0,
+  monday: 1, mon: 1,
+  tuesday: 2, tue: 2,
+  wednesday: 3, wed: 3,
+  thursday: 4, thu: 4, thur: 4, thurs: 4,
+  friday: 5, fri: 5,
+  saturday: 6, sat: 6,
+};
+
+/**
+ * Resolve "Friday", "next Monday", "this Saturday" to a YYYY-MM-DD date.
+ * "next X" always means the X after the current or coming week.
+ * "this X" means the coming X in the current week (or today if today is X).
+ * A bare day name means the next occurrence of that day (including today).
+ * Returns null if no day-of-week phrase is found.
+ */
+function resolveDayOfWeek(lower: string): string | null {
+  const nextMatch = /\bnext\s+(sunday|sun|monday|mon|tuesday|tue|wednesday|wed|thursday|thu|thur|thurs|friday|fri|saturday|sat)\b/.exec(lower);
+  const thisMatch = /\bthis\s+(sunday|sun|monday|mon|tuesday|tue|wednesday|wed|thursday|thu|thur|thurs|friday|fri|saturday|sat)\b/.exec(lower);
+  const bareMatch = /\b(sunday|sun|monday|mon|tuesday|tue|wednesday|wed|thursday|thu|thur|thurs|friday|fri|saturday|sat)\b/.exec(lower);
+
+  const match = nextMatch ?? thisMatch ?? bareMatch;
+  if (!match) return null;
+
+  const targetDay = DAYS[match[1]!.toLowerCase()];
+  if (targetDay === undefined) return null;
+
+  const today = new Date();
+  const todayDay = today.getDay();
+  let daysAhead: number;
+
+  if (nextMatch) {
+    // "next Friday" — skip past the next occurrence to the one after
+    daysAhead = ((targetDay - todayDay + 7) % 7) || 7;
+    daysAhead += 7;
+  } else if (thisMatch) {
+    // "this Friday" — the coming Friday in the current week or today
+    daysAhead = ((targetDay - todayDay + 7) % 7);
+  } else {
+    // Bare day name — next occurrence including today
+    daysAhead = ((targetDay - todayDay + 7) % 7);
+  }
+
+  const d = new Date(today);
+  d.setDate(today.getDate() + daysAhead);
+  return d.toISOString().slice(0, 10);
+}
+
 /**
  * Parse follow-up message into a partial update (patch).
  * Rules-first: date, time, "rename X", "tomorrow", "5pm", etc.
@@ -72,13 +123,19 @@ export function parseEditPatch(
   } else if (lower.includes('today')) {
     dueDate = new Date().toISOString().slice(0, 10);
   } else {
-    const ymd = /(\d{4})-(\d{2})-(\d{2})/.exec(text);
-    if (ymd) dueDate = ymd[0];
-    const dmy = /\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})\b/.exec(text);
-    if (dmy && !dueDate) {
-      const [, day, month, year] = dmy;
-      const y = year.length === 2 ? 2000 + parseInt(year, 10) : parseInt(year, 10);
-      dueDate = `${y}-${month!.padStart(2, '0')}-${day!.padStart(2, '0')}`;
+    // Day-of-week: "Friday", "next Monday", "this Saturday"
+    const dayOfWeekResolved = resolveDayOfWeek(lower);
+    if (dayOfWeekResolved) {
+      dueDate = dayOfWeekResolved;
+    } else {
+      const ymd = /(\d{4})-(\d{2})-(\d{2})/.exec(text);
+      if (ymd) dueDate = ymd[0];
+      const dmy = /\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})\b/.exec(text);
+      if (dmy && !dueDate) {
+        const [, day, month, year] = dmy;
+        const y = year!.length === 2 ? 2000 + parseInt(year!, 10) : parseInt(year!, 10);
+        dueDate = `${y}-${month!.padStart(2, '0')}-${day!.padStart(2, '0')}`;
+      }
     }
   }
 

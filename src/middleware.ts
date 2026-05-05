@@ -9,6 +9,12 @@ import type { NextRequest } from 'next/server';
  */
 export function middleware(request: NextRequest) {
   const start = Date.now();
+
+  // Enforce /login as the only auth entry point.
+  if (request.nextUrl.pathname === '/signin') {
+    return NextResponse.redirect(new URL('/login', request.url));
+  }
+
   const response = NextResponse.next();
 
   // DEV ONLY: Disable HTTP caching to always get fresh builds
@@ -46,6 +52,7 @@ export const config = {
     '/grocery/:path*',
     '/(tabs)/:path*',
     '/app',
+    '/signin',
     '/onboarding',
     '/onboarding/first-task',
   ],

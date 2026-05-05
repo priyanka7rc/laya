@@ -71,24 +71,27 @@ function OnboardingPreferencesInner() {
 
   if (loading) {
     return (
-      <main className="min-h-screen flex items-center justify-center">
-        <p>Loading...</p>
+      <main className="min-h-screen flex items-center justify-center bg-background">
+        <p className="text-muted-foreground">Loading...</p>
       </main>
     );
   }
 
+  const selectClass =
+    "w-full border border-border rounded px-3 py-2 bg-elevated text-foreground focus:outline-none focus:ring-2 focus:ring-ring";
+
   return (
-    <main className="min-h-screen flex items-center justify-center px-4 py-8">
+    <main className="min-h-screen flex items-center justify-center px-4 py-8 bg-background">
       <div className="w-full max-w-md space-y-4">
-        <h1 className="text-2xl font-semibold">Preferences (Optional)</h1>
-        <p className="text-sm text-gray-600">You can skip this and update later.</p>
+        <h1 className="text-2xl font-semibold text-foreground">Preferences (Optional)</h1>
+        <p className="text-sm text-muted-foreground">You can skip this and update later.</p>
 
         <div>
-          <label className="text-sm block mb-1">Household mode</label>
+          <label className="text-sm text-foreground block mb-1">Household mode</label>
           <select
             value={householdMode}
             onChange={(e) => setHouseholdMode(e.target.value as typeof householdMode)}
-            className="w-full border rounded px-3 py-2"
+            className={selectClass}
           >
             <option value="">Select (optional)</option>
             <option value="run_most">I run most home tasks</option>
@@ -98,11 +101,11 @@ function OnboardingPreferencesInner() {
         </div>
 
         <div>
-          <label className="text-sm block mb-1">Reminder window</label>
+          <label className="text-sm text-foreground block mb-1">Reminder window</label>
           <select
             value={reminderWindow}
             onChange={(e) => setReminderWindow(e.target.value as typeof reminderWindow)}
-            className="w-full border rounded px-3 py-2"
+            className={selectClass}
           >
             <option value="">Select (optional)</option>
             <option value="morning">Morning</option>
@@ -111,7 +114,7 @@ function OnboardingPreferencesInner() {
           </select>
         </div>
 
-        <label className="flex items-center gap-2 text-sm">
+        <label className="flex items-center gap-2 text-sm text-foreground">
           <input
             type="checkbox"
             checked={whatsappEnabled}
@@ -120,13 +123,13 @@ function OnboardingPreferencesInner() {
           Enable WhatsApp assistant
         </label>
 
-        {error ? <p className="text-sm text-red-500">{error}</p> : null}
+        {error ? <p className="text-sm text-danger-foreground">{error}</p> : null}
         <div className="space-y-2">
           <button
             type="button"
             onClick={handleContinue}
             disabled={saving}
-            className="w-full bg-black text-white py-2 rounded disabled:opacity-60"
+            className="w-full bg-primary text-primary-foreground py-2 rounded disabled:opacity-60 hover:bg-primary/90 transition-colors"
           >
             {saving ? "Saving..." : "Continue"}
           </button>
@@ -134,7 +137,7 @@ function OnboardingPreferencesInner() {
             type="button"
             onClick={handleContinue}
             disabled={saving}
-            className="w-full border border-gray-300 py-2 rounded text-sm disabled:opacity-60"
+            className="w-full border border-border py-2 rounded text-sm text-foreground disabled:opacity-60 hover:bg-muted transition-colors"
           >
             Skip
           </button>

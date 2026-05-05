@@ -8,6 +8,7 @@ import { Card, Button } from "@/components/ui";
 import { Users, Settings, MessageSquare, ChevronRight } from "@/components/Icons";
 import { supabase } from "@/lib/supabaseClient";
 import { getCurrentAppUser } from "@/lib/users/linking";
+import { useTheme } from "@/context/ThemeContext";
 
 export default function ProfilePage() {
   const { user, signOut } = useAuth();
@@ -99,6 +100,10 @@ export default function ProfilePage() {
               </div>
               <div className="space-y-0 divide-y divide-border">
                 <div className="flex items-center justify-between py-3">
+                  <span className="text-sm text-foreground">Appearance</span>
+                  <AppearancePicker />
+                </div>
+                <div className="flex items-center justify-between py-3">
                   <span className="text-sm text-foreground">Timezone</span>
                   <span className="text-sm text-muted-foreground flex items-center gap-1">
                     Pacific Time
@@ -187,5 +192,32 @@ export default function ProfilePage() {
         </main>
       </div>
     </ProtectedRoute>
+  );
+}
+
+function AppearancePicker() {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
+  const { appearance, setAppearance } = useTheme();
+
+  if (!mounted) return null;
+
+  return (
+    <div className="flex rounded-lg border border-border bg-muted p-0.5 gap-0.5">
+      {(["light", "dark", "system"] as const).map((opt) => (
+        <button
+          key={opt}
+          type="button"
+          onClick={() => setAppearance(opt)}
+          className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+            appearance === opt
+              ? "bg-card text-foreground shadow-sm"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          {opt === "system" ? "Auto" : opt.charAt(0).toUpperCase() + opt.slice(1)}
+        </button>
+      ))}
+    </div>
   );
 }

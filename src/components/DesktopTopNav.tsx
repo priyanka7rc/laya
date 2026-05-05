@@ -4,9 +4,10 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const navItems = [
+  { name: "Home",    href: "/home" },
   { name: "Tasks",   href: "/tasks" },
   { name: "Lists",   href: "/lists" },
-  { name: "Unload", href: "/capture" },
+  { name: "Unload",  href: "/capture" },
   { name: "Profile", href: "/profile" },
 ];
 
@@ -29,12 +30,13 @@ export default function DesktopTopNav() {
         </span>
       </Link>
 
-      {/* Nav items — no Home */}
+      {/* Nav items */}
       <nav>
         <ul className="flex items-center gap-1">
           {navItems.map((item) => {
             const isActive =
               pathname === item.href ||
+              (item.href === "/home" && (pathname === "/" || pathname === "/app")) ||
               (item.href === "/lists" && pathname?.startsWith("/lists"));
             return (
               <li key={item.href}>

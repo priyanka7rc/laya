@@ -24,11 +24,15 @@ export async function POST(request: NextRequest) {
       due_date: dueDateOverride,
       due_time: dueTimeOverride,
       allowDuplicate = false,
+      notes,
+      remind_at: remindAtOverride,
     } = body as {
       text?: string;
       due_date?: string;
       due_time?: string;
       allowDuplicate?: boolean;
+      notes?: string | null;
+      remind_at?: string | null;
     };
 
     const trimmed = typeof text === 'string' ? text.trim() : '';
@@ -85,6 +89,8 @@ export async function POST(request: NextRequest) {
       allowDuplicateIndices: allowDuplicate ? [0] : [],
       source: TASK_SOURCES.WEB_KEYBOARD,
       sourceMessageId: null,
+      notes: notes ?? null,
+      remindAt: remindAtOverride ?? null,
     });
 
     return NextResponse.json({

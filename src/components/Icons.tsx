@@ -219,14 +219,26 @@ export function emojiForListName(name: string): string {
   if (lower.includes("gift")) return "🎁";
   if (lower.includes("work") || lower.includes("meeting") || lower.includes("office")) return "💼";
   if (lower.includes("travel") || lower.includes("trip") || lower.includes("vacation")) return "✈️";
+  if (lower.includes("packing") || lower.includes("luggage") || lower.includes("suitcase")) return "🧳";
   if (lower.includes("food") || lower.includes("eat") || lower.includes("restaurant") || lower.includes("dinner") || lower.includes("lunch")) return "🍽️";
   if (lower.includes("health") || lower.includes("gym") || lower.includes("fitness") || lower.includes("workout")) return "💪";
+  if (lower.includes("medicine") || lower.includes("pharmacy") || lower.includes("doctor")) return "💊";
+  if (lower.includes("tv") || lower.includes("television") || lower.includes("show") || lower.includes("series") || lower.includes("episode") || lower.includes("stream")) return "📺";
   if (lower.includes("movie") || lower.includes("film") || lower.includes("watch")) return "🎬";
   if (lower.includes("music")) return "🎵";
   if (lower.includes("birthday")) return "🎂";
+  if (lower.includes("festival") || lower.includes("party") || lower.includes("holiday") || lower.includes("event")) return "🎉";
   if (lower.includes("garden") || lower.includes("plant")) return "🌱";
   if (lower.includes("finance") || lower.includes("money") || lower.includes("budget")) return "💰";
   if (lower.includes("school") || lower.includes("study") || lower.includes("learn")) return "📝";
   if (lower.includes("pet") || lower.includes("dog") || lower.includes("cat")) return "🐾";
+  if (lower.includes("storage") || lower.includes("pantry") || lower.includes("inventory")) return "📦";
+  if (lower.includes("shoe") || lower.includes("brand") || lower.includes("fashion") || lower.includes("clothes") || lower.includes("clothing") || lower.includes("wear")) return "👟";
+  if (lower.includes("car") || lower.includes("vehicle") || lower.includes("auto")) return "🚗";
+  if (lower.includes("tech") || lower.includes("software") || lower.includes("computer") || lower.includes("app") || lower.includes("code")) return "💻";
+  if (lower.includes("idea") || lower.includes("brain") || lower.includes("thought")) return "💡";
+  if (lower.includes("sport") || lower.includes("game") || lower.includes("football") || lower.includes("cricket") || lower.includes("tennis")) return "⚽";
+  if (lower.includes("baby") || lower.includes("kid") || lower.includes("child") || lower.includes("toy")) return "🧸";
+  if (lower.includes("clean") || lower.includes("laundry") || lower.includes("dry cleaning")) return "🧺";
   return "📋";
 }

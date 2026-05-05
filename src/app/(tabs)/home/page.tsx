@@ -4,14 +4,17 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@/components/AuthProvider";
 import ProtectedRoute from "@/components/ProtectedRoute";
+import { FirstRunDemo } from "@/components/FirstRunDemo";
 import { Card } from "@/components/ui";
+import { useToast } from "@/hooks/useToast";
 import { trackTaskToggle } from "@/lib/analytics";
-import { useRouter } from "next/navigation";
+import { getFirstRunDemoSeen, markFirstRunDemoSeen } from "@/lib/firstRunDemo";
 import { getCurrentAppUser } from "@/lib/users/linking";
-import { executeTaskView } from "@/server/taskView/taskViewEngine";
 import { TaskViewTask } from "@/lib/taskView/contracts";
 import type { ListViewList } from "@/lib/listView/contracts";
 import { supabase } from "@/lib/supabaseClient";
+import { CreateTaskModal } from "@/components/CreateTaskModal";
+import { CreateListModal } from "@/components/CreateListModal";
 import {
   MessageSquare,
   ChevronRight,
@@ -50,18 +53,40 @@ function getUpcomingBuckets(tasks: TodayTask[]) {
 }
 
 export default function HomePage() {
-  const { user } = useAuth();
-  const router = useRouter();
+  const { user, loading: authLoading } = useAuth();
+  const { toast } = useToast();
   const [todayTasks, setTodayTasks] = useState<TodayTask[]>([]);
   const [upcomingTasks, setUpcomingTasks] = useState<TodayTask[]>([]);
   const [lists, setLists] = useState<ListViewList[]>([]);
   const [loading, setLoading] = useState(true);
   const [isWhatsAppLinked, setIsWhatsAppLinked] = useState(true);
   const [displayName, setDisplayName] = useState<string>("");
+  const [showCreateTask, setShowCreateTask] = useState(false);
+  const [showCreateList, setShowCreateList] = useState(false);
+  const [demoReady, setDemoReady] = useState(false);
+  const [showDemo, setShowDemo] = useState(false);
 
   useEffect(() => {
     if (user) fetchTodayData();
   }, [user]);
+
+  useEffect(() => {
+    let mounted = true;
+    if (authLoading || !user) return;
+    void getFirstRunDemoSeen("home").then((seen) => {
+      if (!mounted) return;
+      setShowDemo(!seen);
+      setDemoReady(true);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [authLoading, user]);
+
+  const dismissDemo = () => {
+    setShowDemo(false);
+    void markFirstRunDemoSeen("home");
+  };
 
   const fetchTodayData = async () => {
     try {
@@ -81,30 +106,32 @@ export default function HomePage() {
         return;
       }
 
-      // Set display name from app user record
       if (appUser.display_name) {
         setDisplayName(appUser.display_name);
       } else if (user?.email) {
-        // Fallback: derive from email prefix
         const part = user.email.split("@")[0];
         setDisplayName(part.charAt(0).toUpperCase() + part.slice(1));
       }
 
-      const [todayResult, upcomingResult] = await Promise.all([
-        executeTaskView({
-          identity: { kind: "appUserId", appUserId: appUser.id },
-          view: "today",
-        }),
-        executeTaskView({
-          identity: { kind: "appUserId", appUserId: appUser.id },
-          view: "upcoming",
-        }),
+      const { data: { session } } = await supabase.auth.getSession();
+      const taskHeaders: Record<string, string> = { "Content-Type": "application/json" };
+      if (session?.access_token) taskHeaders["Authorization"] = `Bearer ${session.access_token}`;
+
+      const [todayRes, upcomingRes] = await Promise.all([
+        fetch("/api/tasks/view", { method: "POST", headers: taskHeaders, body: JSON.stringify({ view: "today" }) }),
+        fetch("/api/tasks/view", { method: "POST", headers: taskHeaders, body: JSON.stringify({ view: "upcoming" }) }),
       ]);
-      setTodayTasks(todayResult.tasks as TodayTask[]);
-      setUpcomingTasks(upcomingResult.tasks as TodayTask[]);
+      const [todayResult, upcomingResult] = await Promise.all([
+        todayRes.ok ? todayRes.json() : { tasks: [] },
+        upcomingRes.ok ? upcomingRes.json() : { tasks: [] },
+      ]);
+      setTodayTasks((todayResult.tasks ?? []) as TodayTask[]);
+      setUpcomingTasks((upcomingResult.tasks ?? []) as TodayTask[]);
 
       try {
-        const { data: { session } } = await supabase.auth.getSession();
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
         const res = await fetch(`/api/lists/view?limit=3`, {
           headers: session?.access_token
             ? { Authorization: `Bearer ${session.access_token}` }
@@ -128,9 +155,7 @@ export default function HomePage() {
 
   const toggleTask = async (taskId: string, currentStatus: boolean) => {
     const updater = (prev: TodayTask[]) =>
-      prev.map((t) =>
-        t.id === taskId ? { ...t, is_done: !currentStatus } : t
-      );
+      prev.map((t) => (t.id === taskId ? { ...t, is_done: !currentStatus } : t));
     setTodayTasks(updater);
     setUpcomingTasks(updater);
 
@@ -139,19 +164,19 @@ export default function HomePage() {
         .from("tasks")
         .update({ is_done: !currentStatus })
         .eq("id", taskId);
-
       if (error) throw error;
       trackTaskToggle(taskId, !currentStatus);
     } catch (err) {
       console.error("Error updating task:", err);
       const revert = (prev: TodayTask[]) =>
-        prev.map((t) =>
-          t.id === taskId ? { ...t, is_done: currentStatus } : t
-        );
+        prev.map((t) => (t.id === taskId ? { ...t, is_done: currentStatus } : t));
       setTodayTasks(revert);
       setUpcomingTasks(revert);
     }
   };
+
+  // Suppress unused warning — toggleTask will be wired to task rows in a future pass
+  void toggleTask;
 
   const formatTime = (timeString: string | null) => {
     if (!timeString) return "";
@@ -162,27 +187,12 @@ export default function HomePage() {
     return `${displayHour}:${minutes} ${ampm}`;
   };
 
-  const formatOverdueDate = (dateString: string | null, timeString: string | null) => {
-    if (!dateString) return "";
-    const date = new Date(dateString);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
-    const d = new Date(dateString);
-    d.setHours(0, 0, 0, 0);
-    if (d.getTime() === yesterday.getTime()) return "Yesterday";
-    return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  };
-
   const getGreeting = () => {
     const h = new Date().getHours();
     if (h < 12) return "Good morning";
     if (h < 18) return "Good afternoon";
     return "Good evening";
   };
-
-  const getDisplayName = () => displayName;
 
   const getDateString = () =>
     new Date().toLocaleDateString("en-US", {
@@ -191,43 +201,33 @@ export default function HomePage() {
       day: "numeric",
     });
 
-  const getDateStringShort = () =>
-    new Date().toLocaleDateString("en-US", {
-      weekday: "long",
-      month: "long",
-      day: "numeric",
-    });
-
-  const incompleteToday = todayTasks.filter((t) => !t.is_done);
-  const taskCount = incompleteToday.length;
-
   const todayStr = new Date().toISOString().slice(0, 10);
-  const overdueTasks = todayTasks.filter(
-    (t) => !t.is_done && t.due_date && t.due_date < todayStr
+  const incompleteToday = todayTasks.filter((t) => !t.is_done);
+  const overdueTasks = incompleteToday.filter(
+    (t) => t.due_date && t.due_date < todayStr
   );
   const overdueCount = overdueTasks.length;
+  // Only tasks due today (excludes overdue and tasks without any due date that arrived via upcoming)
+  const todayOnlyTasks = incompleteToday.filter(
+    (t) => !t.due_date || t.due_date >= todayStr
+  );
 
   const incompleteUpcoming = upcomingTasks.filter((t) => !t.is_done);
   const buckets = getUpcomingBuckets(incompleteUpcoming);
-
-  const sampleOverdue = overdueTasks[0];
-  const sampleToday = overdueCount === 0 ? incompleteToday[0] : null;
 
   return (
     <ProtectedRoute>
       <div className="min-h-screen bg-background transition-colors">
         <main className="container mx-auto px-4 lg:px-12 py-8 md:py-12 max-w-md lg:max-w-6xl">
-          {/* Header: greeting + date only */}
+          {/* Header */}
           <header className="mb-8 md:mb-12">
             <h1 className="text-3xl md:text-4xl font-semibold text-foreground mb-1">
               {getGreeting()}
               <span className="hidden lg:inline">
-                {getDisplayName() ? `, ${getDisplayName()}` : ""}
+                {displayName ? `, ${displayName}` : ""}
               </span>
             </h1>
-            <p className="text-muted-foreground text-base mt-2">
-              {getDateString()}
-            </p>
+            <p className="text-muted-foreground text-base mt-2">{getDateString()}</p>
           </header>
 
           {loading ? (
@@ -242,30 +242,37 @@ export default function HomePage() {
             </div>
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8">
-              {/* Left column: Today + Upcoming */}
+              {/* Left column: Today + On the Horizon */}
               <div className="lg:col-span-7 space-y-6">
-                {/* Today card */}
+                {/* Today card — today-only tasks */}
                 <Card className="rounded-2xl p-5 shadow-sm border border-border hover:border-primary/30 transition-colors">
-                  <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center justify-between mb-4">
                     <Link
                       href="/tasks"
                       className="text-xl font-semibold text-foreground hover:text-primary transition-colors"
                     >
                       Today
                     </Link>
-                    <Link
-                      href="/tasks"
+                    <button
+                      type="button"
+                      onClick={() => setShowCreateTask(true)}
                       className="w-8 h-8 flex items-center justify-center rounded-lg text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
                       aria-label="Add task"
                       title="Add task"
                     >
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <svg
+                        className="w-4 h-4"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth={2}
+                      >
                         <path d="M12 5v14M5 12h14" />
                       </svg>
-                    </Link>
+                    </button>
                   </div>
 
-                  {(overdueCount > 0 || taskCount > 0) ? (
+                  {todayOnlyTasks.length > 0 ? (
                     <>
                       <h4 className="text-sm font-medium text-muted-foreground uppercase tracking-wider mb-4">
                         NEXT UP
@@ -273,120 +280,130 @@ export default function HomePage() {
                       <div className="space-y-3">
                         {/* Mobile: one sample row */}
                         <div className="lg:hidden space-y-3">
-                          {sampleOverdue ? (
-                            <div className="flex items-start gap-3">
-                              <div className="mt-1 w-1.5 h-1.5 rounded-full bg-destructive flex-shrink-0" />
-                              <div className="flex-1">
-                                <p className="text-foreground font-medium">
-                                  {sampleOverdue.title}
-                                </p>
-                                <p className="text-sm text-muted-foreground">
-                                  {formatOverdueDate(sampleOverdue.due_date ?? null, sampleOverdue.due_time ?? null)}
-                                  {sampleOverdue.due_time && ` ${formatTime(sampleOverdue.due_time)}`}
-                                </p>
-                              </div>
-                            </div>
-                          ) : sampleToday ? (
+                          {todayOnlyTasks[0] && (
                             <div className="flex items-start gap-3">
                               <div className="mt-1 w-1.5 h-1.5 rounded-full bg-primary flex-shrink-0" />
                               <div className="flex-1">
                                 <p className="text-foreground font-medium">
-                                  {sampleToday.title}
+                                  {todayOnlyTasks[0].title}
                                 </p>
                                 <p className="text-sm text-muted-foreground">
-                                  {sampleToday.due_time
-                                    ? formatTime(sampleToday.due_time)
+                                  {todayOnlyTasks[0].due_time
+                                    ? formatTime(todayOnlyTasks[0].due_time)
                                     : "Today"}
                                 </p>
                               </div>
                             </div>
-                          ) : null}
-                        </div>
-                        {/* Desktop: task rows */}
+                  )}
+                </div>
+                        {/* Desktop: up to 3 task rows */}
                         <div className="hidden lg:block space-y-2">
-                          {[...overdueTasks, ...incompleteToday.filter(t => !overdueTasks.some(o => o.id === t.id))]
-                            .slice(0, 3)
-                            .map((task) => (
-                              <div
-                                key={task.id}
-                                className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-muted/50 transition-colors"
-                              >
-                                <div className="flex-1 min-w-0">
-                                  <p className="font-medium text-sm text-foreground truncate">
-                                    {task.title}
-                                  </p>
-                                  <p className="text-xs text-muted-foreground mt-0.5">
-                                    {task.due_date && task.due_date < todayStr
-                                      ? `${formatOverdueDate(task.due_date ?? null, task.due_time ?? null)}${task.due_time ? ` · ${formatTime(task.due_time)}` : ""}`
-                                      : task.due_time
-                                        ? formatTime(task.due_time)
-                                        : "Today"}
-                                  </p>
-                                </div>
-                                {task.category && (
-                                  <div className="px-2.5 py-1 rounded-md bg-primary/10 text-primary text-xs font-medium shrink-0">
-                                    {task.category}
-                                  </div>
-                                )}
+                          {todayOnlyTasks.slice(0, 3).map((task) => (
+                      <div
+                        key={task.id}
+                              className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-muted/50 transition-colors"
+                            >
+                        <div className="flex-1 min-w-0">
+                                <p className="font-medium text-sm text-foreground truncate">
+                                  {task.title}
+                                </p>
+                                <p className="text-xs text-muted-foreground mt-0.5">
+                                  {task.due_time ? formatTime(task.due_time) : "Today"}
+                                </p>
                               </div>
-                            ))}
+                              {task.category && (
+                                <div className="px-2.5 py-1 rounded-md bg-primary/10 text-primary text-xs font-medium shrink-0">
+                                  {task.category}
+                                </div>
+                              )}
+                            </div>
+                          ))}
                         </div>
                       </div>
                     </>
-                  ) : null}
-
-                </Card>
-
-                {/* Upcoming card */}
-                <Card className="rounded-2xl p-5 shadow-sm border border-border">
-                  <h3 className="text-xl font-semibold text-foreground mb-4">
-                    Upcoming
-                  </h3>
-                  {/* Mobile: two rows - Tomorrow, This week */}
-                  <div className="space-y-4 lg:hidden">
-                    <div>
-                      <p className="text-sm text-foreground">Tomorrow</p>
-                      <p className="text-sm font-semibold text-foreground mt-0.5">
-                        {buckets.tomorrowCount} {buckets.tomorrowCount === 1 ? "task" : "tasks"}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-sm text-foreground">This week</p>
-                      <p className="text-sm font-semibold text-foreground mt-0.5">
-                        {buckets.thisWeekCount} {buckets.thisWeekCount === 1 ? "task" : "tasks"}
-                      </p>
-                    </div>
-                  </div>
-                  {/* Desktop: three cards */}
-                  <div className="hidden lg:grid grid-cols-3 gap-4">
-                    <div className="p-4 rounded-xl border border-border/50">
-                      <p className="text-sm font-medium mb-2">Tomorrow</p>
-                      <p className="text-muted-foreground text-sm">
-                        {buckets.tomorrowCount} {buckets.tomorrowCount === 1 ? "task" : "tasks"}
-                      </p>
-                    </div>
-                    <div className="p-4 rounded-xl border border-border/50">
-                      <p className="text-sm font-medium mb-2">Weekend</p>
-                      <p className="text-muted-foreground text-sm">
-                        {buckets.weekendCount} {buckets.weekendCount === 1 ? "task" : "tasks"}
-                      </p>
-                    </div>
-                    <div className="p-4 rounded-xl border border-border/50">
-                      <p className="text-sm font-medium mb-2">Next Week</p>
-                      <p className="text-muted-foreground text-sm">
-                        {buckets.nextWeekCount} {buckets.nextWeekCount === 1 ? "task" : "tasks"}
-                      </p>
-                    </div>
-                  </div>
-                  {incompleteUpcoming.length === 0 && (
-                    <p className="text-sm text-muted-foreground mt-4">
-                      No upcoming tasks
-                    </p>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">No tasks due today</p>
                   )}
                 </Card>
-              </div>
 
-              {/* Right column: Recent Lists, Quick capture, WhatsApp */}
+                {/* On the Horizon card */}
+                <Card className="rounded-2xl p-5 shadow-sm border border-border">
+                  <h3 className="text-xl font-semibold text-foreground mb-4">
+                    On the Horizon
+                  </h3>
+
+                  {/* Catch Up — always visible */}
+                  <div className="mb-5">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
+                      Catch Up
+                    </p>
+                    {/* Desktop: full-width card tile */}
+                    <Link
+                      href="/tasks#catch-up"
+                      className="hidden lg:block p-3 rounded-xl border border-border/50 hover:border-primary/30 transition-colors"
+                    >
+                      <p className="text-sm font-medium mb-1">Overdue</p>
+                      <p className={`text-sm ${overdueCount > 0 ? "text-warning-foreground" : "text-muted-foreground"}`}>
+                        {overdueCount} {overdueCount === 1 ? "task" : "tasks"}
+                      </p>
+                    </Link>
+                    {/* Mobile: flex row matching Upcoming rows */}
+                    <Link
+                      href="/tasks#catch-up"
+                      className="flex lg:hidden items-center justify-between py-2"
+                    >
+                      <span className="text-sm text-foreground">Overdue</span>
+                      <span className={`text-sm font-semibold ${overdueCount > 0 ? "text-warning-foreground" : "text-foreground"}`}>
+                        {overdueCount} {overdueCount === 1 ? "task" : "tasks"}
+                      </span>
+                    </Link>
+                  </div>
+
+                  {/* Upcoming buckets */}
+                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
+                    Upcoming
+                  </p>
+                  {/* Desktop: 3-column grid */}
+                  <div className="hidden lg:grid grid-cols-3 gap-3">
+                    {[
+                      { label: "Tomorrow", count: buckets.tomorrowCount },
+                      { label: "Weekend", count: buckets.weekendCount },
+                      { label: "Next Week", count: buckets.nextWeekCount },
+                    ].map(({ label, count }) => (
+                      <Link
+                        key={label}
+                        href="/tasks#upcoming"
+                        className="p-3 rounded-xl border border-border/50 hover:border-primary/30 transition-colors"
+                      >
+                        <p className="text-sm font-medium mb-1">{label}</p>
+                        <p className="text-muted-foreground text-sm">
+                          {count} {count === 1 ? "task" : "tasks"}
+                        </p>
+                      </Link>
+                    ))}
+                  </div>
+                  {/* Mobile: rows */}
+                  <div className="space-y-2 lg:hidden">
+                    {[
+                      { label: "Tomorrow", count: buckets.tomorrowCount },
+                      { label: "This week", count: buckets.thisWeekCount },
+                    ].map(({ label, count }) => (
+                      <Link
+                        key={label}
+                        href="/tasks#upcoming"
+                        className="flex items-center justify-between py-2"
+                      >
+                        <span className="text-sm text-foreground">{label}</span>
+                        <span className="text-sm font-semibold text-foreground">
+                          {count} {count === 1 ? "task" : "tasks"}
+                        </span>
+                      </Link>
+                    ))}
+                  </div>
+              </Card>
+                </div>
+
+              {/* Right column: Recent Lists, WhatsApp */}
               <div className="lg:col-span-5 space-y-6">
                 {/* Lists / Recent Lists */}
                 <Card className="rounded-2xl p-5 shadow-sm border border-border">
@@ -405,28 +422,33 @@ export default function HomePage() {
                       Recent Lists
                     </Link>
                     <div className="hidden lg:flex items-center gap-2">
-                      <Link
-                        href="/lists"
+                      <button
+                        type="button"
+                        onClick={() => setShowCreateList(true)}
                         className="w-8 h-8 flex items-center justify-center rounded-lg text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
                         aria-label="Add list"
                         title="Add list"
                       >
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <svg
+                          className="w-4 h-4"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                          strokeWidth={2}
+                        >
                           <path d="M12 5v14M5 12h14" />
                         </svg>
-                      </Link>
+                    </button>
                     </div>
                   </div>
                   {lists.length === 0 ? (
-                    <p className="text-sm text-muted-foreground py-2">
-                      No lists yet
-                    </p>
+                    <p className="text-sm text-muted-foreground py-2">No lists yet</p>
                   ) : (
                     <div className="space-y-3">
                       {lists.map((list) => {
                         const done = list.doneCount ?? 0;
                         const total = list.itemCount ?? 0;
-                        return (
+                      return (
                           <Link
                             key={list.id}
                             href={`/lists/${list.id}`}
@@ -438,18 +460,22 @@ export default function HomePage() {
                               </div>
                               <span className="font-medium text-sm text-foreground">
                                 {list.name}
-                              </span>
-                            </div>
+                          </span>
+                        </div>
                             <span className="text-xs text-muted-foreground">
-                              <span className="lg:hidden">{total > 0 ? `${done}/${total}` : "0"}</span>
-                              <span className="hidden lg:inline bg-muted text-muted-foreground rounded px-1.5 py-0.5">{total}</span>
+                              <span className="lg:hidden">
+                                {total > 0 ? `${done}/${total}` : "0"}
+                              </span>
+                              <span className="hidden lg:inline bg-muted text-muted-foreground rounded px-1.5 py-0.5">
+                                {total}
+                              </span>
                             </span>
                           </Link>
-                        );
-                      })}
-                    </div>
-                  )}
-                </Card>
+                      );
+                    })}
+                  </div>
+                )}
+              </Card>
 
                 {/* WhatsApp card */}
                 <Card
@@ -469,13 +495,13 @@ export default function HomePage() {
                       }`}
                     >
                       <MessageSquare
-                        className={`w-5 h-5 ${isWhatsAppLinked ? "text-white" : "text-muted-foreground"}`}
+                        className={`w-5 h-5 ${
+                          isWhatsAppLinked ? "text-white" : "text-muted-foreground"
+                        }`}
                       />
-                    </div>
+                </div>
                     <div className="flex-1 min-w-0">
-                      <h3 className="font-medium text-foreground mb-1">
-                        WhatsApp
-                      </h3>
+                      <h3 className="font-medium text-foreground mb-1">WhatsApp</h3>
                       {isWhatsAppLinked ? (
                         <>
                           <p className="text-sm text-muted-foreground mb-3">
@@ -485,11 +511,9 @@ export default function HomePage() {
                             <span className="w-2 h-2 rounded-full bg-[#25D366] animate-pulse" />
                             Daily digest enabled
                           </div>
-                        </>
-                      ) : (
-                        <p className="text-sm text-muted-foreground mb-4">
-                          Not linked
-                        </p>
+                      </>
+                    ) : (
+                        <p className="text-sm text-muted-foreground mb-4">Not linked</p>
                       )}
                       <Link
                         href="/link-whatsapp"
@@ -501,14 +525,35 @@ export default function HomePage() {
                       >
                         {isWhatsAppLinked ? "Manage WhatsApp" : "Connect WhatsApp"}
                       </Link>
-                    </div>
                   </div>
-                </Card>
+                </div>
+              </Card>
               </div>
             </div>
           )}
         </main>
       </div>
+
+      <CreateTaskModal
+        isOpen={showCreateTask}
+        onClose={() => setShowCreateTask(false)}
+        onSuccess={() => { setShowCreateTask(false); fetchTodayData(); }}
+        toast={toast}
+      />
+
+      <CreateListModal
+        isOpen={showCreateList}
+        onClose={() => setShowCreateList(false)}
+        onSuccess={() => { setShowCreateList(false); fetchTodayData(); }}
+        toast={toast}
+      />
+
+      <FirstRunDemo
+        page="home"
+        isOpen={demoReady && showDemo}
+        onComplete={dismissDemo}
+        onSkip={dismissDemo}
+      />
     </ProtectedRoute>
   );
 }

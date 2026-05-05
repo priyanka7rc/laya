@@ -194,7 +194,7 @@ export function ImportListsModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-overlay"
       onClick={handleClose}
     >
       <Card
@@ -202,13 +202,13 @@ export function ImportListsModal({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex justify-between items-center mb-4">
-          <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
+          <h2 className="text-xl font-semibold text-foreground">
             Import list from screenshot
           </h2>
           <button
             type="button"
             onClick={handleClose}
-            className="text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+            className="text-muted-foreground hover:text-foreground transition-colors"
             aria-label="Close"
           >
             ✕
@@ -233,7 +233,7 @@ export function ImportListsModal({
             >
               {uploading ? 'Uploading…' : 'Choose file'}
             </Button>
-            <p className="text-sm text-gray-500 dark:text-gray-400">
+            <p className="text-sm text-muted-foreground">
               JPEG, PNG, GIF, WebP or PDF. Max 10MB.
             </p>
           </div>
@@ -241,7 +241,7 @@ export function ImportListsModal({
 
         {step === 'ocr' && (
           <div className="space-y-4">
-            <p className="text-sm text-gray-600 dark:text-gray-300">
+            <p className="text-sm text-muted-foreground">
               File uploaded. Extract text to detect list and items.
             </p>
             <Button
@@ -257,16 +257,16 @@ export function ImportListsModal({
 
         {step === 'review' && (
           <div className="space-y-4">
-            <p className="text-sm text-gray-600 dark:text-gray-300">
+            <p className="text-sm text-muted-foreground">
               Edit the list name if needed. Candidate items are captured for later.
             </p>
             <div className="space-y-3 max-h-96 overflow-y-auto">
               {previewLists.map((item, index) => (
                 <div
                   key={index}
-                  className="p-3 rounded-xl border border-gray-200 dark:border-gray-700 space-y-2"
+                  className="p-3 rounded-xl border border-border space-y-2"
                 >
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  <label className="block text-sm font-medium text-foreground">
                     List name
                   </label>
                   <input
@@ -275,15 +275,15 @@ export function ImportListsModal({
                     onChange={(e) =>
                       updateName(index, e.target.value.slice(0, NAME_MAX_LENGTH))
                     }
-                    className="w-full px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800 border border-gray-300 dark:border-gray-600 text-gray-900 dark:text-white text-sm"
+                    className="w-full px-3 py-2 rounded-lg bg-elevated border border-border text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                     placeholder="List name"
                   />
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                  <p className="text-xs text-muted-foreground">
                     {item.candidatesCount} candidate item(s) captured (will be
                     added later).
                   </p>
                   {item.sample.length > 0 && (
-                    <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                    <p className="text-xs text-muted-foreground truncate">
                       e.g. {item.sample.slice(0, 3).join(', ')}
                       {item.candidatesCount > 3 ? '…' : ''}
                     </p>
@@ -302,7 +302,7 @@ export function ImportListsModal({
                                 : name
                             )
                           }
-                          className="px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-xs text-gray-800 dark:text-gray-100 border border-gray-200 dark:border-gray-700"
+                          className="px-2 py-0.5 rounded-full bg-muted text-xs text-foreground border border-border hover:bg-soft transition-colors"
                         >
                           {name}
                         </button>
@@ -384,7 +384,7 @@ export function ImportListsModal({
 
         {step === 'done' && (
           <div className="space-y-4">
-            <p className="text-gray-700 dark:text-gray-300">
+            <p className="text-foreground">
               List created. You can add items to it later from the Lists tab.
             </p>
             <Button onClick={handleClose} className="w-full">

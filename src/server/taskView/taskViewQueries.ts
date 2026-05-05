@@ -1,4 +1,4 @@
-import { supabase } from '@/lib/supabaseClient';
+import { supabaseAdmin } from '@/lib/supabaseClient';
 import {
   TaskViewTask,
   TaskViewPageInfo,
@@ -6,6 +6,10 @@ import {
   TaskViewFilters,
   TaskViewPagination,
 } from '@/lib/taskView/contracts';
+
+// supabaseAdmin uses the service-role key — this module must only run server-side.
+// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+const supabase = supabaseAdmin!;
 
 type DbTaskRow = {
   id: string;
@@ -21,6 +25,8 @@ type DbTaskRow = {
   is_done?: boolean;
   due_date?: string | null;
   due_time?: string | null;
+  inferred_date?: boolean;
+  inferred_time?: boolean;
 };
 
 function mapRowToTask(row: DbTaskRow): TaskViewTask {
@@ -37,6 +43,9 @@ function mapRowToTask(row: DbTaskRow): TaskViewTask {
     category: row.category,
     parseConfidence: row.parse_confidence,
     createdAt: row.created_at,
+    notes: row.notes ?? null,
+    inferred_date: row.inferred_date ?? false,
+    inferred_time: row.inferred_time ?? false,
     is_done: row.is_done ?? (row.status === 'completed'),
     due_date,
     due_time,
